@@ -63,7 +63,7 @@ jobs:
           go build -trimpath -ldflags "-s -w" -o dist/package/gatecrasher ./cmd/gatecrasher
           cp README.md LICENSE CHANGELOG.md project.yaml deploy.yaml gatecrasher.cerberus.yaml dist/package/
           cp dist/build-info.json dist/package/
-          tar -C dist/package -czf "dist/gatecrasher_${VERSION}_linux_amd64.tar.gz" .
+          COPYFILE_DISABLE=1 tar -C dist/package -czf "dist/gatecrasher_${VERSION}_linux_amd64.tar.gz" .
           cd dist
           sha256sum ./*.tar.gz ./build-info.json | sed 's# \./# #' > SHA256SUMS
       - uses: actions/upload-artifact@v4
