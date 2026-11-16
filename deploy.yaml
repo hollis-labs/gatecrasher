@@ -1,0 +1,21 @@
+# Deployment template. Configure target hosts and review generated paths before use.
+schema: fleet-deploy/v1
+app: gatecrasher
+repo: hollis-labs/gatecrasher
+artifact: {name: "gatecrasher-{sha12}", tarball: "gatecrasher_{version}_{os}_{arch}.tar.gz", sums: SHA256SUMS}
+targets:
+  - id: gatecrasher-linux-amd64
+    when: {os: linux, arch: amd64}
+    hosts: [] # intentionally no provisioned deployment destination
+    binary: gatecrasher
+    install_root: "~/.local/share/fleet/releases/gatecrasher"
+    symlinks:
+      - path: "~/.local/bin/gatecrasher"
+    preflight:
+      - {kind: sqlite_backup, db: "~/.local/share/gatecrasher/gatecrasher.db", dest: "{backup_dir}/gatecrasher.pre-{version}.db"}
+    # Cerberus supervises the process (Option B): it runs the symlink above and never builds or places the binary.
+    restart: {via: cerberus, resource: gatecrasher}
+    health:
+      url: "http://127.0.0.1:8080/healthz"
+      expect_status: [200]
+      timeout: 30s

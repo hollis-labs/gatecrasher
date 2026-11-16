@@ -1,0 +1,92 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net"
+
+	"github.com/spf13/cobra"
+
+	"github.com/hollis-labs/substrate/module"
+	"github.com/hollis-labs/substrate/modules/auth"
+	"github.com/hollis-labs/substrate/modules/database"
+	"github.com/hollis-labs/substrate/modules/httphost"
+	"github.com/hollis-labs/substrate/modules/identity"
+
+	"github.com/hollis-labs/gatecrasher/internal/api"
+	"github.com/hollis-labs/gatecrasher/internal/hostguard"
+	"github.com/hollis-labs/gatecrasher/internal/service"
+	"github.com/hollis-labs/gatecrasher/internal/settings"
+	"github.com/hollis-labs/gatecrasher/internal/tachyon"
+)
+
+func serveCmd(ctx context.Context, app *module.App) *cobra.Command {
+	var addr string
+	cmd := &cobra.Command{
+		Use: "serve", Short: "Serve the API and the UI", Args: cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			if addr != "" {
+				cfg, _ := app.Config["httphost"].(map[string]any)
+				if cfg == nil {
+					cfg = map[string]any{}
+					app.Config["httphost"] = cfg
+				}
+				cfg["addr"] = addr
+			}
+			return serve(ctx, app, nil)
+		},
+	}
+	cmd.Flags().StringVar(&addr, "addr", "", "Listener address (overrides httphost.addr)")
+	cmd.Flags().Bool("managed", false, "Supervised run; class 1 auth is always enforced")
+	return cmd
+}
+
+// serve runs the HTTP host until ctx ends. ready, when set, learns the bound address.
+func serve(ctx context.Context, app *module.App, ready func(net.Addr)) error {
+	if guard := auth.Guard(app); guard == nil || string(guard.Mode()) != "enforce" {
+		return errors.New("class 1 applications require enforced auth")
+	}
+	id := identity.From(app)
+	if id == nil {
+		return errors.New("the identity module must be started")
+	}
+	st := database.From(app)
+	if st == nil {
+		return errors.New("the database module must be started")
+	}
+	cfg, err := settings.Parse(app.Config[settings.Key])
+	if err != nil {
+		return err
+	}
+	api.RegisterScopes(auth.ScopeTable(app))
+	owner, err := tachyon.New(tachyon.Config{BaseURL: cfg.TachyonURL, TokenFile: cfg.ProducerTokenFile, CallerScope: cfg.CallerScope})
+	if err != nil {
+		return err
+	}
+	host, err := service.New(ctx, st, service.Config{OwnerRef: cfg.OwnerRef, CallerScope: cfg.CallerScope, CallbackSubject: cfg.CallbackSubject, ActorMap: cfg.ActorMap})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = host.Close() }()
+	if err = host.Wire(owner); err != nil {
+		return err
+	}
+	handler, err := httphost.Handler(app, httphost.Options{
+		Routes: api.New(host, id, service.RecipeRunner{Host: host}).Mux(),
+	})
+	if err != nil {
+		return err
+	}
+	// Outermost first: the Host check (DNS rebinding) and forwarding-header hygiene, then the
+	// session cookie becomes the bearer the guard verifies, then the host (guard, routes, SPA).
+	handler = hostguard.Handler(cfg.AllowedHosts, id.Middleware(handler))
+	return httphost.Serve(ctx, app, handler, httphost.ServeOptions{
+		Ready: func(addr net.Addr) {
+			slog.Info("gatecrasher listening", "addr", addr.String())
+			if ready != nil {
+				ready(addr)
+			}
+		},
+	})
+}

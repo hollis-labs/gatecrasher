@@ -1,0 +1,43 @@
+# Install with `lefthook install` to enable these optional local hooks.
+
+pre-commit:
+  parallel: true
+  commands:
+
+    # ── Go parallel group ─────────────────────────────────────────────
+    # These three run simultaneously on staged .go files.
+
+    go-format:
+      # Fail if any staged Go file is not gofmt + goimports clean.
+      glob: "*.go"
+      skip_empty: true
+      run: |
+        unformatted=$(gofmt -l {staged_files} 2>/dev/null)
+        if command -v goimports >/dev/null 2>&1; then
+          unformatted="$unformatted$(goimports -l {staged_files} 2>/dev/null)"
+        fi
+        if [ -n "$unformatted" ]; then
+          echo "Unformatted files:"
+          echo "$unformatted" | sort -u
+          exit 1
+        fi
+
+    go-lint:
+      # Only lints new/modified code so existing warnings don't block commits.
+      glob: "*.go"
+      skip_empty: true
+      run: golangci-lint run --new --timeout 30s
+
+    go-vet:
+      glob: "*.go"
+      skip_empty: true
+      run: go vet ./...
+
+pre-push:
+  commands:
+
+    go-test:
+      # Full test suite gate before code reaches the remote.
+      glob: "*.go"
+      skip_empty: true
+      run: go test ./...

@@ -1,0 +1,58 @@
+name: gatecrasher build
+on:
+  push: { branches: [main] }
+  pull_request: { branches: [main] }
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      version: { type: string, required: false, default: "" }
+    outputs:
+      artifact:
+        value: ${{ jobs.build.outputs.artifact }}
+permissions: { contents: read }
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env: { GOWORK: "off", CGO_ENABLED: "0" }
+    outputs:
+      artifact: ${{ steps.meta.outputs.artifact }}
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - run: go vet ./... && go test -race -count=1 ./...
+        env: { CGO_ENABLED: "1" }
+      - id: meta
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          revision=$(git rev-parse HEAD)
+          version="${VERSION_INPUT:-v0.0.0-${revision:0:12}}"
+          if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.+-][0-9A-Za-z.+-]+)?$ ]]; then
+            echo "Invalid artifact version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "artifact=gatecrasher-${revision:0:12}" >> "$GITHUB_OUTPUT"
+      - name: Build checksummed archive
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          mkdir -p dist/package
+          go build -trimpath -o dist/package/gatecrasher ./cmd/gatecrasher
+          cp README.md LICENSE CHANGELOG.md project.yaml deploy.yaml gatecrasher.cerberus.yaml dist/package/
+          tar -C dist/package -czf "dist/gatecrasher_${VERSION}_linux_amd64.tar.gz" .
+          cd dist
+          sha256sum "gatecrasher_${VERSION}_linux_amd64.tar.gz" > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.artifact }}
+          path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error

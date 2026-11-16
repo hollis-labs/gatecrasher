@@ -1,0 +1,30 @@
+# Authored project/1 descriptor; Folio never overwrites it.
+schema: project/1
+id: gatecrasher
+name: Gatecrasher
+description: "Operation-bound approval coordination with durable routing and exact native delivery"
+class: 1
+lifecycle: experimental
+visibility: public
+owner: agency:hollis-labs
+operator: agency:hollis-labs
+org: hollis-labs
+repo: https://github.com/hollis-labs/gatecrasher
+location: .
+interfaces:
+  - { type: daemon, name: gatecrasher, auth: enforce }
+  - { type: api, name: gatecrasher API, auth: enforce }
+  - { type: cli, name: gatecrasher, auth: enforce }
+substrate: { variant: app-host, profile: agentic, version: v0.1.1-0.20261115214401-89a05ede0291 }
+deploy: { fleet: deploy.yaml, cerberus: gatecrasher.cerberus.yaml }
+release: { tagging: semver }
+metadata:
+  activation_status: unconfigured
+settings:
+  runtime:
+    target_os: linux
+    target_arch: amd64
+    http_port: 8080
+    binary_link: ~/.local/bin/gatecrasher
+    install_root: ~/.local/share/fleet/releases/gatecrasher
+    backup_database: ~/.local/share/gatecrasher/gatecrasher.db
