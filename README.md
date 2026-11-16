@@ -92,7 +92,11 @@ scaffolding drift without overwriting authored files.
 
 CI checks module pins, generated wiring, both lint configurations and publication
 hygiene. Build/release workflows use GitHub-hosted runners and checksummed
-artifacts; a release requires an explicit version tag.
+artifacts; a release requires an explicit version tag. Each archive contains
+`fleet-build-info/v1` metadata, also supplied as `build-info.json` alongside
+`SHA256SUMS`; checksums cover both metadata and tarball. The executable currently
+has no dedicated version linker variable, so the workflow records the artifact
+version in build metadata rather than injecting an unsupported `main.version`.
 
 Repository tests exercise real own-identity HTTP, file SQLite, SDK execution,
 concurrent/restarted reservations, cleanup failure and prepared physical delivery.

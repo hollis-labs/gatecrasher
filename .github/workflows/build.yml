@@ -29,30 +29,48 @@ jobs:
         env:
           VERSION_INPUT: ${{ inputs.version }}
         run: |
-          revision=$(git rev-parse HEAD)
-          version="${VERSION_INPUT:-v0.0.0-${revision:0:12}}"
-          if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.+-][0-9A-Za-z.+-]+)?$ ]]; then
-            echo "Invalid artifact version" >&2
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "artifact=gatecrasher-${revision:0:12}" >> "$GITHUB_OUTPUT"
+          python3 - <<'PYVERSION'
+          import os, re, subprocess
+          revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          version = os.environ.get("VERSION_INPUT") or "v0.0.0-g" + revision[:12]
+          match = re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?", version)
+          if not match or (match[4] and any(part.isdigit() and len(part) > 1 and part.startswith("0") for part in match[4].split("."))):
+              raise SystemExit("artifact version must be v-prefixed SemVer")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("version=" + version + "\n")
+              output.write("artifact=gatecrasher-" + revision[:12] + "\n")
+          PYVERSION
       - name: Build checksummed archive
         env:
           VERSION: ${{ steps.meta.outputs.version }}
           GOOS: linux
           GOARCH: amd64
         run: |
+          set -euo pipefail
           mkdir -p dist/package
-          go build -trimpath -o dist/package/gatecrasher ./cmd/gatecrasher
+          python3 - <<'PYINFO'
+          import datetime, json, os, subprocess
+          commit = os.environ["GITHUB_SHA"]
+          info = {"schema": "fleet-build-info/v1", "app": "gatecrasher",
+                  "commit": commit, "sha12": commit[:12], "version": os.environ["VERSION"],
+                  "go_version": subprocess.check_output(["go", "env", "GOVERSION"], text=True).strip(),
+                  "built_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                  "targets": ["linux/amd64"]}
+          with open("dist/build-info.json", "w") as output:
+              json.dump(info, output, indent=2)
+          PYINFO
+          # This executable has no main.version linker variable; see README.
+          go build -trimpath -ldflags "-s -w" -o dist/package/gatecrasher ./cmd/gatecrasher
           cp README.md LICENSE CHANGELOG.md project.yaml deploy.yaml gatecrasher.cerberus.yaml dist/package/
+          cp dist/build-info.json dist/package/
           tar -C dist/package -czf "dist/gatecrasher_${VERSION}_linux_amd64.tar.gz" .
           cd dist
-          sha256sum "gatecrasher_${VERSION}_linux_amd64.tar.gz" > SHA256SUMS
+          sha256sum ./*.tar.gz ./build-info.json | sed 's# \./# #' > SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.meta.outputs.artifact }}
           path: |
             dist/*.tar.gz
+            dist/build-info.json
             dist/SHA256SUMS
           if-no-files-found: error

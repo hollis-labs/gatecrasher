@@ -90,7 +90,12 @@ Keep the existing owner/store untouched: host rollback does not roll back a huma
 decision or an external effect. Binary rollback must preserve reservation/claim
 semantics and compatible schema; restore does not release uncertain work.
 
-Release workflows build immutable artifacts and SHA256SUMS. Option B fleet-install
+Release workflows build immutable artifacts, `build-info.json` using
+`fleet-build-info/v1`, and `SHA256SUMS`. The same metadata is inside each tarball
+and alongside it; checksums cover the metadata file and tarball. App, commit,
+short SHA, version, Go version, UTC build time and targets retain the fleet
+artifact contract. No version linker variable is defined by the executable;
+artifact version is recorded in metadata. Option B fleet-install
 places the binary and Cerberus supervises the installed link; the supervisor does
 not build from source. Before rendering deployment files, select the real target
 in project.yaml and review all generated paths, health URLs and supervisor
