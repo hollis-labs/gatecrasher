@@ -8,7 +8,8 @@ GOWORK=off golangci-lint run --config .golangci.transport.yml ./...
 
 Handlers in `internal/api` decode a request, call
 the service layer and encode the answer. They do not import `internal/storage`, the Substrate `database`
-module or `database/sql`: `internal/service` is the boundary and the only place that runs SQL. The
+module or `database/sql`: the service layer (`internal/service`, and `internal/approvals` for the
+approval inbox) is the boundary and the only place that runs SQL. The
 composition root, `cmd/gatecrasher`, opens the store and hands `internal/service` its read pool and write
 handle.
 

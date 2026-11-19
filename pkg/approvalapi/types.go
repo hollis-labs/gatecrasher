@@ -205,3 +205,32 @@ type SecretProvided struct {
 	Ref        string    `json:"ref"`
 	ProvidedAt time.Time `json:"provided_at"`
 }
+
+// The decide route, for surfaces and approver agents (scope gatecrasher.approval.decide).
+// Elevated requests also need the caller to hold the request's approver class as a scope
+// and to be configured for it; critical requests are decided by the owner only.
+const (
+	PathDecideSuffix = "/decide"
+	ScopeDecide      = "gatecrasher.approval.decide"
+)
+
+// DecideRequest is the body of POST /api/gate/v1/approvals/{id}/decide.
+type DecideRequest struct {
+	Outcome  Outcome   `json:"outcome"`
+	Narrowed *Narrowed `json:"narrowed,omitempty"`
+	Note     string    `json:"note,omitempty"`
+}
+
+// DecideResponse is the answer to a decide. Shadow is true when the decision was only
+// recorded (shadow mode); the approval then stays pending.
+type DecideResponse struct {
+	Approval
+	Shadow bool `json:"shadow,omitempty"`
+}
+
+// More error codes, for the decide route.
+const (
+	ErrCodeNotDecider  = "not_decider" // 403: the caller may not decide this approval
+	ErrCodeCeiling     = "ceiling"     // 403: an approver agent's approval would exceed its class ceiling
+	ErrCodeUnavailable = "unavailable" // 503: approvals are not configured
+)

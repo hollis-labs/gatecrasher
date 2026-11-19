@@ -17,8 +17,8 @@ info:
     Go types for this contract are in `pkg/approvalapi` (module
     `github.com/hollis-labs/gatecrasher`). That package and this file must agree.
 
-    Status: draft contract, version 1. Routes are not served yet; producers build
-    against fakes until the server lands.
+    Status: version 1, served from main (not yet deployed). Errors 503 `unavailable`
+    when the operator has not configured approvals (an owner and producers).
   license:
     name: MIT
     identifier: MIT
@@ -127,19 +127,65 @@ paths:
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
+  /api/gate/v1/approvals/{id}/decide:
+    post:
+      tags: [approvals]
+      operationId: decideApproval
+      summary: Decide a pending approval (surfaces and approver agents)
+      description: |
+        Scope `gatecrasher.approval.decide`.
+        - The owner (the configured operator principal) may decide any pending approval;
+          the decision carries `decider.kind: human` and the owner's registry id.
+        - `elevated`: an approver agent configured for the class that also holds the
+          class itself (`approve.<class>`) as an exact scope (wildcards never count).
+          An agent's approval must fit the class ceiling after narrowing (403 `ceiling`);
+          a denial is always allowed. In shadow mode the agent's decision is recorded
+          only (202, `shadow: true`) and the approval stays pending for the owner.
+        - `critical`: the owner only (403 `not_decider`).
+        - `ground`: decided on arrival; deciding again is 409 `terminal`.
+        A caller that may not see the approval gets 404. `narrowed` may only drop
+        requested scopes or shorten the TTL (400).
+      parameters:
+        - $ref: '#/components/parameters/ApprovalID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DecideRequest' }
+      responses:
+        '200':
+          description: Decided; `decision` is the signed decision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DecideResponse' }
+        '202':
+          description: Recorded in shadow mode; the approval is still pending.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DecideResponse' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
   /api/gate/v1/jwks.json:
     get:
       tags: [keys]
       operationId: getJWKS
       summary: Keys that sign decisions
-      description: Public; no credential needed. Ed25519 keys (kty OKP, crv Ed25519).
-      security: []
+      description: |
+        Scope `gatecrasher.approval.read`. Ed25519 keys (kty OKP, crv Ed25519).
+        Every `/api/` route sits behind the host's auth guard, so the key set needs the
+        read scope that producers already hold; fetch it once and cache it by `kid`.
       responses:
         '200':
           description: The key set.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/JWKS' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
 components:
   securitySchemes:
     bearer:
@@ -156,7 +202,7 @@ components:
       schema: { type: string }
   responses:
     Error:
-      description: Refused. `code` is one of invalid, unauthorized, forbidden, not_found, idempotency_conflict, terminal, digest_mismatch.
+      description: Refused. `code` is one of invalid, unauthorized, forbidden, not_found, idempotency_conflict, terminal, digest_mismatch, not_decider, ceiling, unavailable.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
@@ -245,6 +291,25 @@ components:
         decision:
           type: string
           description: The signed decision (compact JWS, see DecisionClaims). Present when status is approved or denied.
+    DecideRequest:
+      type: object
+      required: [outcome]
+      additionalProperties: false
+      properties:
+        outcome: { type: string, enum: [approved, denied] }
+        narrowed:
+          type: object
+          description: Optional. Only drops requested scopes or shortens the TTL.
+          properties:
+            scopes: { type: array, items: { type: string } }
+            ttl_seconds: { type: integer, minimum: 1 }
+        note: { type: string, maxLength: 2000, description: Kept in the approval's event log, not in the decision. }
+    DecideResponse:
+      allOf:
+        - $ref: '#/components/schemas/Approval'
+        - type: object
+          properties:
+            shadow: { type: boolean, description: True when recorded in shadow mode; the approval stays pending. }
     DecisionClaims:
       type: object
       description: |
@@ -300,7 +365,7 @@ components:
       properties:
         code:
           type: string
-          enum: [invalid, unauthorized, forbidden, not_found, idempotency_conflict, terminal, digest_mismatch]
+          enum: [invalid, unauthorized, forbidden, not_found, idempotency_conflict, terminal, digest_mismatch, not_decider, ceiling, unavailable]
         message: { type: string }
     SecretIntake:
       type: object
