@@ -12,7 +12,8 @@ const WardenPrefix = "warden:"
 
 // WardenVerifier adapts a verifier of Warden-issued JWTs (aud=gatecrasher) for the
 // approval routes: ids get WardenPrefix, and the kind is agent or service, never
-// operator, so the owner is only ever Gatecrasher's own operator identity.
+// operator. The owner is matched by principal id, and settings refuse an owner
+// principal with WardenPrefix, so a Warden credential is never the owner.
 func WardenVerifier(v libauth.Verifier) libauth.Verifier { return wardenVerifier{v} }
 
 type wardenVerifier struct{ v libauth.Verifier }

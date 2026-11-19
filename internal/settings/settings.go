@@ -194,6 +194,9 @@ func (a Approvals) validate() error {
 	if (a.Owner.Principal == "") != (a.Owner.Sub == "") {
 		return fmt.Errorf("gatecrasher: approvals.owner needs both principal and sub")
 	}
+	if strings.HasPrefix(a.Owner.Principal, "warden:") {
+		return fmt.Errorf("gatecrasher: approvals.owner.principal must be a Gatecrasher identity, not a Warden one")
+	}
 	for id, src := range a.Producers {
 		if id == "" || src == "" {
 			return fmt.Errorf("gatecrasher: empty approvals producer")

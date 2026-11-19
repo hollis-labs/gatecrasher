@@ -37,6 +37,7 @@ func TestParseApprovals(t *testing.T) {
 	}
 	for name, raw := range map[string]any{
 		"half owner":    map[string]any{"owner": map[string]any{"principal": "usr_1"}},
+		"warden owner":  map[string]any{"owner": map[string]any{"principal": "warden:usr_1", "sub": "o"}},
 		"bad class":     map[string]any{"classes": map[string]any{"credentials": map[string]any{}}},
 		"empty source":  map[string]any{"producers": map[string]any{"key:w": ""}},
 		"neg ceiling":   map[string]any{"classes": map[string]any{"approve.x": map[string]any{"ceiling": map[string]any{"max_ttl_seconds": -1}}}},

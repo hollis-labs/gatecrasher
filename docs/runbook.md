@@ -179,7 +179,8 @@ The approval routes (and the outer guard) then also accept Warden-issued EdDSA J
 with `aud: gatecrasher`, that issuer, and the scopes in `scope`. A Warden principal's
 id is `warden:<sub>`: list it under `producers` (for example
 `"warden:<warden service sub>": warden`) or a class's `agents`. It is never the owner,
-whatever `kind` it claims; the owner is Gatecrasher's own operator identity. The Tachyon
+whatever `kind` it claims: the owner is matched by principal id, and an
+`owner.principal` starting `warden:` is refused at startup. The Tachyon
 callback and recipe routes keep accepting only Gatecrasher's own keys. `standalone`
 (the default) trusts only Gatecrasher's own keys.
 
