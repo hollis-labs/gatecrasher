@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/hollis-labs/substrate/modules/identity"
 
 	"github.com/hollis-labs/gatecrasher/internal/api"
+	"github.com/hollis-labs/gatecrasher/internal/approvals"
 	"github.com/hollis-labs/gatecrasher/internal/hostguard"
 	"github.com/hollis-labs/gatecrasher/internal/service"
 	"github.com/hollis-labs/gatecrasher/internal/settings"
@@ -72,8 +74,13 @@ func serve(ctx context.Context, app *module.App, ready func(net.Addr)) error {
 	if err = host.Wire(owner); err != nil {
 		return err
 	}
+	inbox, err := approvals.New(st, approvals.Config{Settings: cfg.Approvals, DataDir: filepath.Dir(st.Config().SQLite.Path)})
+	if err != nil {
+		return err
+	}
+	go inbox.Run(ctx, func(err error) { slog.Warn("approvals: sweep failed", "err", err) })
 	handler, err := httphost.Handler(app, httphost.Options{
-		Routes: api.New(host, id, service.RecipeRunner{Host: host}).Mux(),
+		Routes: api.New(host, id, service.RecipeRunner{Host: host}).WithApprovals(inbox).Mux(),
 	})
 	if err != nil {
 		return err

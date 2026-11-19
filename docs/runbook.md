@@ -9,7 +9,8 @@ endpoints, secret custody and process supervision for your environment before us
 The Folio shell uses `SUBSTRATE_CONFIG` or the XDG Gatecrasher config file. Data
 and identity state use XDG locations or `GATECRASHER_DATA_DIR`. Every listener,
 including loopback/managed, enforces auth. Identity setup is offline. The app
-selects no MCP module and serves no inbox or human respond endpoint.
+selects no MCP module. The approval inbox (gate v1, below) is served only once its
+`approvals` block names an owner and producers; until then its routes answer 503.
 
 Required operator bindings in the `gatecrasher` block:
 
@@ -54,6 +55,57 @@ other non-completed receipts require reconciliation; never replay automatically.
 See wire-contract.md for the closed response states. The CLI accepts no binding
 or launcher parameters, and returns success only for completed. Runtime telemetry
 and error responses omit raw input, tool arguments and credential material.
+
+## Approval inbox (gate v1)
+
+The contract is `api/openapi/gate-v1.yaml`; the store is `internal/approvals`. Configure
+it in the `gatecrasher` block:
+
+```yaml
+gatecrasher:
+  approvals:
+    owner: { principal: "<owner's Gatecrasher operator principal id>", sub: "<owner registry id>" }
+    producers: { "key:<warden key id>": warden }
+    classes:
+      approve.credentials:
+        agents: { "key:<approver key id>": "<approver registry id>" }
+        ceiling: { max_ttl_seconds: 86400, audiences: [llm-gateway], scopes: [llm-gateway.decide] }
+        shadow: true
+    decision_key_file: decision-signing.key   # relative to the database directory
+```
+
+Credentials are Gatecrasher identity keys (principal id `key:<id>`, audience `gatecrasher`):
+
+```sh
+gatecrasher identity key create --name warden --audience gatecrasher \
+  --scope gatecrasher.approval.submit,gatecrasher.approval.read --out /path/to/warden.key
+gatecrasher identity key create --name approver-credentials --audience gatecrasher \
+  --scope gatecrasher.approval.decide,gatecrasher.approval.read,approve.credentials --out /path/to/approver.key
+```
+
+Rules the store enforces:
+
+- A producer submits only as its configured `source`; that name is the `aud` of its
+  decisions. Idempotency keys are per producer.
+- `ground` is approved on arrival by Gatecrasher (`decider.kind: app`).
+- `elevated` is decided by the owner, or by an agent listed for the class that also
+  holds the class as an exact scope (a `*` grant never counts). An agent's approval must
+  fit the ceiling after narrowing; an empty ceiling means agents cannot approve at all.
+  With `shadow: true` agent decisions are recorded only and the request waits for the owner.
+- `critical` is decided by the owner only (the configured operator principal).
+- Producers, the owner and the class's agents can read an approval; anyone else gets 404.
+- Decisions are EdDSA compact JWS, valid for redemption 10 minutes after the decision.
+  A producer that misses the window submits a new request.
+- A sweep every 15 seconds (and every read) expires pending requests past `expires_at`.
+
+The decision signing key is created 0600 on first start and refused if group or others
+can read it. Back it up with the database: losing it invalidates outstanding decisions
+only (they expire in 10 minutes), but producers caching the key set must refetch
+`/api/gate/v1/jwks.json`. Requests, decisions, shadow decisions and the event log
+(`approval_events`) are append-only; a status moves once, from pending.
+
+Not yet: the fan-out stream for surfaces, approval cards, `request_secret`, and Warden
+JWKS trust (`auth.trust: warden`).
 
 ## Storage and recovery
 

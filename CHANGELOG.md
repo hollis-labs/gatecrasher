@@ -7,7 +7,12 @@
 - Add the version 1 approval contract: `api/openapi/gate-v1.yaml` (submit, get, await,
   withdraw, JWKS; signed EdDSA decisions; request_secret intake shapes) and
   `pkg/approvalapi` (types, RFC 8785 request digest, decision sign/verify/check).
-  The routes are not served yet.
+- Serve the approval inbox: submit, get, await (capped at 60s), withdraw, decide and
+  JWKS routes over an immutable request store with append-only decisions, shadow
+  decisions and event log. Ground requests are approved on arrival; elevated ones by
+  configured approver agents within per-class ceilings (with a shadow mode) or the
+  owner; critical ones by the owner only. Decisions are signed with a persisted
+  Ed25519 key. A sweeper expires due requests. The JWKS route needs the read scope.
 
 - Add an experimental Substrate host with enforced own identity and scoped HTTP API.
 - Persist immutable routing snapshots, CAS updates, append-only observations,

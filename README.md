@@ -25,12 +25,15 @@ signed decision offline:
 - `GET /api/gate/v1/approvals/{id}` and `GET /api/gate/v1/approvals/{id}/await?timeout=30s`
   (`gatecrasher.approval.read`).
 - `POST /api/gate/v1/approvals/{id}/withdraw` (`gatecrasher.approval.submit`).
-- `GET /api/gate/v1/jwks.json`: the Ed25519 keys that sign decisions.
+- `POST /api/gate/v1/approvals/{id}/decide` (`gatecrasher.approval.decide`): the owner, or
+  an approver agent for elevated requests.
+- `GET /api/gate/v1/jwks.json` (`gatecrasher.approval.read`): the Ed25519 keys that sign decisions.
 
 The contract is [api/openapi/gate-v1.yaml](api/openapi/gate-v1.yaml). The Go types,
 the request digest (RFC 8785 JCS, SHA-256) and decision verification are in
-[`pkg/approvalapi`](pkg/approvalapi). The routes are not served yet, so producers build
-against fakes. `approvalapi.SignDecision` makes test decisions.
+[`pkg/approvalapi`](pkg/approvalapi). The routes are served from main (see
+[docs/runbook.md](docs/runbook.md) for configuration); `approvalapi.SignDecision` makes
+test decisions for producers' fakes.
 
 A `request_secret` card (milestone 2) posts the secret write-only to the producer's
 one-use intake. Gatecrasher never receives, stores or logs the value, and the value

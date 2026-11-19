@@ -1,4 +1,5 @@
-// Package api exposes narrowly scoped host assessments, never decision writes.
+// Package api exposes the gate v1 routes: narrowly scoped host assessments and the
+// approval inbox (approvals.go).
 package api
 
 import (
@@ -20,7 +21,7 @@ import (
 type Route struct{ Method, Pattern, Scope string }
 
 func Routes() []Route {
-	return []Route{{http.MethodPost, "/api/gate/v1/authorize-response", service.CallbackScope}, {http.MethodPost, "/api/gate/v1/recipes/fingerprint", service.RecipeScope}}
+	return append([]Route{{http.MethodPost, "/api/gate/v1/authorize-response", service.CallbackScope}, {http.MethodPost, "/api/gate/v1/recipes/fingerprint", service.RecipeScope}}, approvalRoutes()...)
 }
 func RegisterScopes(t *libauth.ScopeTable) {
 	for _, r := range Routes() {
@@ -35,9 +36,16 @@ type RecipeRunner interface {
 	Run(context.Context, libauth.Principal, string, string) (sdk.Result, error)
 }
 type Handler struct {
-	assessor Assessor
-	own      libauth.Verifier
-	recipe   RecipeRunner
+	assessor  Assessor
+	own       libauth.Verifier
+	recipe    RecipeRunner
+	approvals Approvals
+}
+
+// WithApprovals serves the approval inbox; without it those routes answer 503.
+func (h *Handler) WithApprovals(a Approvals) *Handler {
+	h.approvals = a
+	return h
 }
 
 func New(a Assessor, own libauth.Verifier, recipes ...RecipeRunner) *Handler {
@@ -51,6 +59,7 @@ func (h *Handler) Mux() *http.ServeMux {
 	m := http.NewServeMux()
 	m.HandleFunc("POST /api/gate/v1/authorize-response", h.authorize)
 	m.HandleFunc("POST /api/gate/v1/recipes/fingerprint", h.runRecipe)
+	h.mountApprovals(m)
 	return m
 }
 func (h *Handler) authorize(w http.ResponseWriter, r *http.Request) {
