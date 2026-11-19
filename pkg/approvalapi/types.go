@@ -123,6 +123,10 @@ type SubmitRequest struct {
 	Evidence       Evidence  `json:"evidence"`
 	RequestDigest  string    `json:"request_digest"`
 	ExpiresAt      time.Time `json:"expires_at"`
+	// Prompt is the question of a choice or question request (cards.go).
+	Prompt *Prompt `json:"prompt,omitempty"`
+	// SecretIntake is the producer's one-use intake of a secret_request.
+	SecretIntake *SecretIntake `json:"secret_intake,omitempty"`
 }
 
 // SubmitResponse is the 201 (new) or 200 (same key, same digest) answer to a submit.
@@ -137,6 +141,8 @@ type Approval struct {
 	ApprovalID string `json:"approval_id"`
 	Status     Status `json:"status"`
 	Decision   string `json:"decision,omitempty"`
+	// Secret is set once a secret_request's secret was provided to the producer.
+	Secret *SecretProvided `json:"secret,omitempty"`
 }
 
 // Error is the body of every non-2xx answer.
@@ -181,6 +187,9 @@ type DecisionClaims struct {
 	Decider       Actor     `json:"decider"`
 	DecidedAt     time.Time `json:"decided_at"`
 	Narrowed      *Narrowed `json:"narrowed,omitempty"`
+	// Response is the owner's choice or answer, for choice and question requests, or
+	// the producer's secret reference for a secret_request.
+	Response *Response `json:"response,omitempty"`
 }
 
 // Issuer is the iss of every decision.
@@ -219,6 +228,10 @@ type DecideRequest struct {
 	Outcome  Outcome   `json:"outcome"`
 	Narrowed *Narrowed `json:"narrowed,omitempty"`
 	Note     string    `json:"note,omitempty"`
+	// Choice is the chosen option id when approving a choice request.
+	Choice string `json:"choice,omitempty"`
+	// Answer is the answer text when approving a question request.
+	Answer string `json:"answer,omitempty"`
 }
 
 // DecideResponse is the answer to a decide. Shadow is true when the decision was only

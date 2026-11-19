@@ -18,6 +18,20 @@
   configured approver agents within per-class ceilings (with a shadow mode) or the
   owner; critical ones by the owner only. Decisions are signed with a persisted
   Ed25519 key. A sweeper expires due requests. The JWKS route needs the read scope.
+- Serve approvals without the Tachyon binding; create the decision key only when
+  approvals are configured; refuse to start with nothing configured.
+- Add the surface fan-out: a server-sent event stream (`/api/gate/v1/events`, filtered
+  to what the caller may read, resumable with Last-Event-ID) and signed webhooks to
+  configured subscribers (HMAC-SHA256, at least once, with stored cursors).
+- Add cards (`/api/gate/v1/approvals/{id}/card`; approve, choose, answer,
+  request_secret) and the choice and question kinds, whose responses are signed into
+  the decision.
+- Add `secret_request`: the card posts the value write-only to the producer's intake on
+  an allowed origin, and the producer reports it provided
+  (`/secret-provided`). Gatecrasher stores only the reference.
+- Add `auth.trust: warden`: accept Warden-issued EdDSA JWTs (aud gatecrasher) on the
+  approval routes, as `warden:`-prefixed principals that are never the owner.
+- Add docs/integration-guide.md for surfaces.
 
 - Add an experimental Substrate host with enforced own identity and scoped HTTP API.
 - Persist immutable routing snapshots, CAS updates, append-only observations,

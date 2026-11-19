@@ -27,7 +27,17 @@ signed decision offline:
 - `POST /api/gate/v1/approvals/{id}/withdraw` (`gatecrasher.approval.submit`).
 - `POST /api/gate/v1/approvals/{id}/decide` (`gatecrasher.approval.decide`): the owner, or
   an approver agent for elevated requests.
+- `POST /api/gate/v1/approvals/{id}/secret-provided` (`gatecrasher.approval.submit`):
+  the producer reports a `secret_request`'s secret provided (a reference, never a value).
+- `GET /api/gate/v1/approvals/{id}/card` (`gatecrasher.approval.read`): the approval as a
+  transport-neutral card (approve, choose, answer, request_secret).
+- `GET /api/gate/v1/events` (`gatecrasher.approval.read`): server-sent events of the
+  approvals the caller may read, resumable with `Last-Event-ID`; signed webhooks push
+  the same events to configured subscribers.
 - `GET /api/gate/v1/jwks.json` (`gatecrasher.approval.read`): the Ed25519 keys that sign decisions.
+
+Surfaces (Tachyon, Basalisk, Surface/ADE) follow the stream or a webhook, render the
+card, and decide: see [docs/integration-guide.md](docs/integration-guide.md).
 
 The contract is [api/openapi/gate-v1.yaml](api/openapi/gate-v1.yaml). The Go types,
 the request digest (RFC 8785 JCS, SHA-256) and decision verification are in
@@ -35,9 +45,12 @@ the request digest (RFC 8785 JCS, SHA-256) and decision verification are in
 [docs/runbook.md](docs/runbook.md) for configuration); `approvalapi.SignDecision` makes
 test decisions for producers' fakes.
 
-A `request_secret` card (milestone 2) posts the secret write-only to the producer's
-one-use intake. Gatecrasher never receives, stores or logs the value, and the value
-never enters a model transcript.
+A `request_secret` card posts the secret write-only to the producer's one-use intake,
+on an origin the operator allowed. Gatecrasher never receives, stores or logs the
+value, and the value never enters a model transcript.
+
+Gatecrasher runs approvals on their own; the Tachyon binding is optional. With
+`auth.trust: warden` it also accepts Warden-issued tokens (see the runbook).
 
 This is experimental software. The standalone daemon requires explicit owner,
 identity and credential configuration. Its fingerprint recipe also requires a

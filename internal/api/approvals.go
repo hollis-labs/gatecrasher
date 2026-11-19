@@ -21,6 +21,10 @@ type Approvals interface {
 	Await(context.Context, libauth.Principal, string, time.Duration) (approvalapi.Approval, error)
 	Withdraw(context.Context, libauth.Principal, string) (approvalapi.Approval, error)
 	Decide(context.Context, libauth.Principal, string, approvalapi.DecideRequest) (approvalapi.DecideResponse, error)
+	SecretProvided(context.Context, libauth.Principal, string, approvalapi.SecretProvidedRequest) (approvalapi.Approval, error)
+	Card(context.Context, libauth.Principal, string) (approvalapi.Card, error)
+	Feed(context.Context, libauth.Principal, int64) ([]approvalapi.FeedEvent, int64, error)
+	Changed() <-chan struct{}
 	JWKS() approvalapi.JWKS
 }
 
@@ -34,6 +38,9 @@ func approvalRoutes() []Route {
 		{http.MethodGet, p + "/{id}/await", approvalapi.ScopeRead},
 		{http.MethodPost, p + "/{id}/withdraw", approvalapi.ScopeSubmit},
 		{http.MethodPost, p + "/{id}" + approvalapi.PathDecideSuffix, approvalapi.ScopeDecide},
+		{http.MethodPost, p + "/{id}" + approvalapi.PathSecretProvidedSuffix, approvalapi.ScopeSubmit},
+		{http.MethodGet, p + "/{id}" + approvalapi.PathCardSuffix, approvalapi.ScopeRead},
+		{http.MethodGet, approvalapi.PathEvents, approvalapi.ScopeRead},
 		{http.MethodGet, approvalapi.PathJWKS, approvalapi.ScopeRead},
 	}
 }
@@ -45,13 +52,17 @@ func (h *Handler) mountApprovals(m *http.ServeMux) {
 	m.HandleFunc("GET "+p+"/{id}/await", h.guarded(approvalapi.ScopeRead, h.awaitApproval))
 	m.HandleFunc("POST "+p+"/{id}/withdraw", h.guarded(approvalapi.ScopeSubmit, h.withdraw))
 	m.HandleFunc("POST "+p+"/{id}"+approvalapi.PathDecideSuffix, h.guarded(approvalapi.ScopeDecide, h.decide))
+	m.HandleFunc("POST "+p+"/{id}"+approvalapi.PathSecretProvidedSuffix, h.guarded(approvalapi.ScopeSubmit, h.secretProvided))
+	m.HandleFunc("GET "+p+"/{id}"+approvalapi.PathCardSuffix, h.guarded(approvalapi.ScopeRead, h.card))
+	m.HandleFunc("GET "+approvalapi.PathEvents, h.guarded(approvalapi.ScopeRead, h.events))
 	m.HandleFunc("GET "+approvalapi.PathJWKS, h.guarded(approvalapi.ScopeRead, h.jwks))
 }
 
 type approvalHandler func(http.ResponseWriter, *http.Request, libauth.Principal)
 
-// guarded reverifies the bearer with Gatecrasher's own identity (no implicit trust of
-// another issuer) and requires the route's scope, as the other routes do.
+// guarded reverifies the bearer with Gatecrasher's own identity, or with the trusted
+// issuer when one is configured (auth.trust: warden), and requires the route's scope, as
+// the other routes do. No other issuer is trusted implicitly.
 func (h *Handler) guarded(scope string, next approvalHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
@@ -61,6 +72,9 @@ func (h *Handler) guarded(scope string, next approvalHandler) http.HandlerFunc {
 			return
 		}
 		p, err := h.own.Verify(r.Context(), token)
+		if (err != nil || !p.Verified) && h.trusted != nil {
+			p, err = h.trusted.Verify(r.Context(), token)
+		}
 		if err != nil || !p.Verified {
 			writeErr(w, http.StatusUnauthorized, approvalapi.ErrCodeUnauthorized, "Credential refused")
 			return
@@ -156,6 +170,32 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, p libauth.Princ
 		status = http.StatusAccepted
 	}
 	writeJSON(w, status, out)
+}
+
+func (h *Handler) secretProvided(w http.ResponseWriter, r *http.Request, p libauth.Principal) {
+	var in approvalapi.SecretProvidedRequest
+	if !decodeBody(w, r, &in) {
+		return
+	}
+	out, err := h.approvals.SecretProvided(r.Context(), p, r.PathValue("id"), in)
+	if err != nil {
+		writeApprovalErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (h *Handler) card(w http.ResponseWriter, r *http.Request, p libauth.Principal) {
+	if r.URL.RawQuery != "" {
+		writeErr(w, http.StatusBadRequest, approvalapi.ErrCodeInvalid, "No query is accepted")
+		return
+	}
+	out, err := h.approvals.Card(r.Context(), p, r.PathValue("id"))
+	if err != nil {
+		writeApprovalErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (h *Handler) jwks(w http.ResponseWriter, _ *http.Request, _ libauth.Principal) {
