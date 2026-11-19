@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Gatecrasher is now the human-in-the-loop and approval service: it owns the inbox,
+  the decisions and their routing. README, AGENTS and project.yaml reflect this.
+- Add the version 1 approval contract: `api/openapi/gate-v1.yaml` (submit, get, await,
+  withdraw, JWKS; signed EdDSA decisions; request_secret intake shapes) and
+  `pkg/approvalapi` (types, RFC 8785 request digest, decision sign/verify/check).
+  The routes are not served yet.
+
 - Add an experimental Substrate host with enforced own identity and scoped HTTP API.
 - Persist immutable routing snapshots, CAS updates, append-only observations,
   logical run reservations and one-use claims in file SQLite.

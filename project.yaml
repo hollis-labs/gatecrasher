@@ -2,7 +2,7 @@
 schema: project/1
 id: gatecrasher
 name: Gatecrasher
-description: "Operation-bound approval coordination with durable routing and exact native delivery"
+description: "The human-in-the-loop and approval service: inbox, signed decisions and routing, with operation-bound one-use admission"
 class: 1
 lifecycle: experimental
 visibility: public

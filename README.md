@@ -1,10 +1,40 @@
 # Gatecrasher
 
-Gatecrasher coordinates exact, operation-bound approvals between a human decision
-owner and an agent runtime. It combines durable routing, one-use admission and
-native reply delivery with the Tradecraft SDK and Substrate application shell.
-[Tachyon](https://github.com/hollis-labs/tachyon) owns the human inbox and decisions;
-Gatecrasher stores routing and execution evidence.
+Gatecrasher is the human-in-the-loop and approval service. Every approval,
+permission question and secret request goes through it: it owns the inbox, the
+decisions and their routing, and it alerts the owner in whichever app they are using.
+Other apps (Tachyon, Basalisk, Surface) are surfaces. They show requests and send
+decisions back through Gatecrasher's API and keep no decision of their own.
+
+Requests are tiered. Ground requests are recorded and arrive already approved.
+Elevated requests go to approver agents holding `approve.<class>`, within per-class
+ceilings and with a shadow mode first. Critical requests go to the owner only.
+Decisions are signed, so the requester verifies them itself.
+
+It keeps what the earlier coordination layer got right: immutable request snapshots,
+operation-bound one-use admission, durable routing, and no replay after an uncertain
+outcome.
+
+## Approval API (version 1, draft)
+
+Producers such as Warden submit, follow and withdraw approval requests, and verify the
+signed decision offline:
+
+- `POST /api/gate/v1/approvals`: submit (`gatecrasher.approval.submit`). Idempotent on
+  `idempotency_key`, and the `request_digest` is recomputed and checked.
+- `GET /api/gate/v1/approvals/{id}` and `GET /api/gate/v1/approvals/{id}/await?timeout=30s`
+  (`gatecrasher.approval.read`).
+- `POST /api/gate/v1/approvals/{id}/withdraw` (`gatecrasher.approval.submit`).
+- `GET /api/gate/v1/jwks.json`: the Ed25519 keys that sign decisions.
+
+The contract is [api/openapi/gate-v1.yaml](api/openapi/gate-v1.yaml). The Go types,
+the request digest (RFC 8785 JCS, SHA-256) and decision verification are in
+[`pkg/approvalapi`](pkg/approvalapi). The routes are not served yet, so producers build
+against fakes. `approvalapi.SignDecision` makes test decisions.
+
+A `request_secret` card (milestone 2) posts the secret write-only to the producer's
+one-use intake. Gatecrasher never receives, stores or logs the value, and the value
+never enters a model transcript.
 
 This is experimental software. The standalone daemon requires explicit owner,
 identity and credential configuration. Its fingerprint recipe also requires a
@@ -25,6 +55,11 @@ go build ./cmd/gatecrasher
 See [identity bootstrap](docs/identity-bootstrap.md) and the
 [runbook](docs/runbook.md) before configuring a daemon. Deployment descriptors
 are templates with no target hosts; configure and review them for your environment.
+
+## Native coordination (current implementation)
+
+The daemon today implements the Tachyon native gate profile described below. Tachyon's
+inbox is retired in a later cutover, once this API is proven.
 
 ## How it works
 

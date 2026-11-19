@@ -1,0 +1,324 @@
+openapi: 3.1.0
+info:
+  title: Gatecrasher approval API
+  version: 1.0.0-draft
+  summary: Submit approval requests, follow them, and verify signed decisions.
+  description: |
+    Gatecrasher is the portfolio's human-in-the-loop and approval service. Producers
+    (Warden first; Cerberus and Tachyon later) submit an approval request for an exact
+    operation or grant, follow it, and receive a signed decision they verify offline.
+
+    Tiers:
+    - `ground`: recorded only. The submit answers already `approved`, with a decision.
+    - `elevated`: decided by an approver agent holding `approve.<class>` (`approver_class`
+      is required), within per-class ceilings, or by the owner.
+    - `critical`: decided by the owner, a human, only.
+
+    Go types for this contract are in `pkg/approvalapi` (module
+    `github.com/hollis-labs/gatecrasher`). That package and this file must agree.
+
+    Status: draft contract, version 1. Routes are not served yet; producers build
+    against fakes until the server lands.
+  license:
+    name: MIT
+    identifier: MIT
+security:
+  - bearer: []
+tags:
+  - name: approvals
+  - name: keys
+paths:
+  /api/gate/v1/approvals:
+    post:
+      tags: [approvals]
+      operationId: submitApproval
+      summary: Submit an approval request
+      description: |
+        Scope `gatecrasher.approval.submit`.
+
+        Idempotent on `idempotency_key`: the same key with the same `request_digest`
+        returns the existing approval (200). The same key with a different digest is
+        refused (409 `idempotency_conflict`).
+
+        Gatecrasher recomputes `request_digest` from `principal`, `requested` and `tier`
+        and refuses a mismatch (422 `digest_mismatch`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SubmitRequest' }
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SubmitResponse' }
+        '200':
+          description: The approval already submitted under this idempotency key.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SubmitResponse' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /api/gate/v1/approvals/{id}:
+    get:
+      tags: [approvals]
+      operationId: getApproval
+      summary: Get an approval's status
+      description: Scope `gatecrasher.approval.read`.
+      parameters:
+        - $ref: '#/components/parameters/ApprovalID'
+      responses:
+        '200':
+          description: The approval.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Approval' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /api/gate/v1/approvals/{id}/await:
+    get:
+      tags: [approvals]
+      operationId: awaitApproval
+      summary: Long-poll until the approval is terminal or the timeout passes
+      description: |
+        Scope `gatecrasher.approval.read`. Answers as soon as the status is terminal.
+        When the timeout passes first it answers 200 with the current (pending) status;
+        it never answers 408. The timeout is capped at 60s.
+      parameters:
+        - $ref: '#/components/parameters/ApprovalID'
+        - name: timeout
+          in: query
+          required: false
+          description: A Go-style duration, e.g. `30s`. Default 30s, maximum 60s.
+          schema: { type: string, default: 30s, examples: ['30s'] }
+      responses:
+        '200':
+          description: The approval, terminal or still pending.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Approval' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /api/gate/v1/approvals/{id}/withdraw:
+    post:
+      tags: [approvals]
+      operationId: withdrawApproval
+      summary: Withdraw a pending approval
+      description: |
+        Scope `gatecrasher.approval.submit`, and only the submitting principal.
+        Withdrawing an already withdrawn approval answers 200. Withdrawing an approval
+        that is approved, denied or expired is refused (409 `terminal`).
+      parameters:
+        - $ref: '#/components/parameters/ApprovalID'
+      responses:
+        '200':
+          description: The approval, now withdrawn.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Approval' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /api/gate/v1/jwks.json:
+    get:
+      tags: [keys]
+      operationId: getJWKS
+      summary: Keys that sign decisions
+      description: Public; no credential needed. Ed25519 keys (kty OKP, crv Ed25519).
+      security: []
+      responses:
+        '200':
+          description: The key set.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JWKS' }
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      description: |
+        A Gatecrasher API key with the route's scope. Later, with `auth.trust: warden`,
+        a Warden-issued JWT with `aud: gatecrasher` and the same scopes.
+  parameters:
+    ApprovalID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    Error:
+      description: Refused. `code` is one of invalid, unauthorized, forbidden, not_found, idempotency_conflict, terminal, digest_mismatch.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Tier:
+      type: string
+      enum: [ground, elevated, critical]
+    Status:
+      type: string
+      enum: [pending, approved, denied, expired, withdrawn]
+    PrincipalKind:
+      type: string
+      enum: [agent, session, machine, app, human]
+    Actor:
+      type: object
+      required: [sub, kind]
+      properties:
+        sub: { type: string, description: Registry id. }
+        kind: { $ref: '#/components/schemas/PrincipalKind' }
+    Principal:
+      type: object
+      required: [sub, kind]
+      properties:
+        sub: { type: string, description: Registry id. }
+        kind: { $ref: '#/components/schemas/PrincipalKind' }
+        act:
+          type: array
+          description: The chain acting on the principal's behalf, outermost first. Omitted when empty.
+          items: { $ref: '#/components/schemas/Actor' }
+    Requested:
+      type: object
+      required: [audience, scopes, ttl_seconds, constraints]
+      properties:
+        audience: { type: string, examples: ['llm-gateway'] }
+        scopes:
+          type: array
+          items: { type: string }
+        ttl_seconds: { type: integer, minimum: 1, examples: [2592000] }
+        constraints:
+          type: object
+          description: Always an object; `{}` when there are none.
+          additionalProperties: true
+    Evidence:
+      type: object
+      properties:
+        task_id: { type: string }
+        session_id: { type: string }
+        policy_rule: { type: string }
+    SubmitRequest:
+      type: object
+      required: [idempotency_key, source, kind, tier, principal, requested, purpose, request_digest, expires_at]
+      properties:
+        idempotency_key: { type: string, description: The producer's request id. }
+        source: { type: string, examples: ['warden'] }
+        kind: { type: string, enum: [credential_grant] }
+        tier: { $ref: '#/components/schemas/Tier' }
+        approver_class:
+          type: string
+          description: Required for `elevated`, refused otherwise.
+          examples: ['approve.credentials']
+        principal: { $ref: '#/components/schemas/Principal' }
+        requested: { $ref: '#/components/schemas/Requested' }
+        purpose: { type: string }
+        evidence: { $ref: '#/components/schemas/Evidence' }
+        request_digest:
+          type: string
+          pattern: '^sha256:[0-9a-f]{64}$'
+          description: |
+            `sha256:` and the lowercase hex SHA-256 of the RFC 8785 (JCS) canonical JSON
+            of `{"principal":…, "requested":…, "tier":…}`, with `act` omitted when empty,
+            `constraints` always an object and `scopes` always an array.
+            `approvalapi.RequestDigest` computes it.
+        expires_at: { type: string, format: date-time }
+    SubmitResponse:
+      type: object
+      required: [approval_id, status]
+      properties:
+        approval_id: { type: string }
+        status: { $ref: '#/components/schemas/Status' }
+    Approval:
+      type: object
+      required: [approval_id, status]
+      properties:
+        approval_id: { type: string }
+        status: { $ref: '#/components/schemas/Status' }
+        decision:
+          type: string
+          description: The signed decision (compact JWS, see DecisionClaims). Present when status is approved or denied.
+    DecisionClaims:
+      type: object
+      description: |
+        Claims of the signed decision: a compact JWS with header `alg: EdDSA`, a `kid`
+        and `typ: gatecrasher-decision+jwt`, signed by a key in /api/gate/v1/jwks.json.
+        `crit` headers are refused, and unknown claims are ignored.
+
+        A producer checks the signature, `iss`, `aud` (itself), `exp` (and that
+        `exp - iat` is at most 10 minutes), that `request_id`, `request_digest` and `tier`
+        match what it submitted, that a `critical` decision has `decider.kind: human`
+        and `decider.sub` equal to the owner's principal, and that `narrowed` only narrows.
+        `approvalapi.VerifyDecision` and `DecisionClaims.Check` do this.
+      required: [iss, aud, jti, iat, exp, approval_id, request_id, request_digest, outcome, tier, decider, decided_at]
+      properties:
+        iss: { type: string, const: gatecrasher }
+        aud: { type: string, examples: ['warden'] }
+        jti: { type: string, description: Decision id. }
+        iat: { type: integer, description: NumericDate. }
+        exp: { type: integer, description: NumericDate; at most 10 minutes after iat. Redeem before it. }
+        approval_id: { type: string }
+        request_id: { type: string, description: The submit's idempotency_key. }
+        request_digest: { type: string }
+        outcome: { type: string, enum: [approved, denied] }
+        tier: { $ref: '#/components/schemas/Tier' }
+        decider: { $ref: '#/components/schemas/Actor' }
+        decided_at: { type: string, format: date-time }
+        narrowed:
+          type: object
+          description: Optional. Can only narrow; scopes a subset of those requested, TTL no longer.
+          properties:
+            scopes: { type: array, items: { type: string } }
+            ttl_seconds: { type: integer, minimum: 1 }
+    JWK:
+      type: object
+      required: [kty, crv, kid, x]
+      properties:
+        kty: { type: string, const: OKP }
+        crv: { type: string, const: Ed25519 }
+        kid: { type: string }
+        x: { type: string, description: base64url public key, no padding. }
+        use: { type: string, const: sig }
+        alg: { type: string, const: EdDSA }
+    JWKS:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          items: { $ref: '#/components/schemas/JWK' }
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [invalid, unauthorized, forbidden, not_found, idempotency_conflict, terminal, digest_mismatch]
+        message: { type: string }
+    SecretIntake:
+      type: object
+      description: |
+        Milestone 2 (request_secret). The producer (Warden) creates a one-use intake and
+        puts it on the approval. Gatecrasher's card form posts the value write-only
+        straight to `intake_url`. Gatecrasher never receives, stores or logs the value,
+        and the value never enters a model transcript.
+      required: [intake_id, intake_url, expires_at]
+      properties:
+        intake_id: { type: string }
+        intake_url: { type: string, format: uri }
+        expires_at: { type: string, format: date-time }
+    SecretProvided:
+      type: object
+      description: Milestone 2. All Gatecrasher records about a provided secret.
+      required: [intake_id, ref, provided_at]
+      properties:
+        intake_id: { type: string }
+        ref: { type: string, description: The reference the producer returned. }
+        provided_at: { type: string, format: date-time }
