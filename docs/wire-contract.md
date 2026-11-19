@@ -1,5 +1,7 @@
 # Tachyon native integration contract
 
+> This is the native Tachyon gate profile, which runs until the Tachyon cutover. The producer approval API, where Gatecrasher owns decisions, is [api/openapi/gate-v1.yaml](../api/openapi/gate-v1.yaml).
+
 Gatecrasher implements the versioned Tachyon native gate profile. The producer
 client refuses decision writes; Tachyon owns the sole inbox and terminal outcome.
 The host imports no Tachyon internal packages. A compatible owner must confirm

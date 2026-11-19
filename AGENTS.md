@@ -1,8 +1,10 @@
 # gatecrasher
 
-Operation-bound approval coordination with durable routing and exact native delivery
+The portfolio's human-in-the-loop and approval service: it owns the inbox, the signed decisions and their routing. Tachyon, Basalisk and Surface are surfaces that show requests and send decisions back through the API.
 
-It is not: a decision store, human inbox, arbitrary runtime launcher, or source of authority from caller assertions.
+It is not: an arbitrary runtime launcher, a secret store (request_secret values go straight to Warden), or a source of authority from caller assertions.
+
+Direction set by the owner on 2026-11-19. Earlier text saying "Tachyon owns the human inbox and decisions" is superseded. The native Tachyon profile below still runs until that cutover.
 
 ## Start Here
 
@@ -12,6 +14,7 @@ It is not: a decision store, human inbox, arbitrary runtime launcher, or source 
 - `internal/service/service.go` — the service layer, the only code that runs SQL; handlers call it. `.golangci.transport.yml` (second lint run) enforces that; `docs/transport-boundary.md` says how.
 - `internal/storage/migrations/sqlite/00001_init.sql` — the schema. Until the first release this is the only migration.
 - `docs/identity-bootstrap.md` — the owner is created offline; there is no open setup over HTTP.
+- `api/openapi/gate-v1.yaml` and `pkg/approvalapi` — the producer contract (version 1). They must agree; change both together and note it in CHANGELOG.
 - `.github/workflows/check.yml` — the full CI gate (vet, pins, wiring current, race tests, both lint runs, scan-public).
 
 ## Commands
@@ -34,8 +37,13 @@ CI (`.github/workflows/check.yml`) is the full gate.
 
 ## Approval and admission
 
-- Tachyon is the only human decision owner. The producer client
-  refuses Respond. Do not add an approved column, host respond verb or inbox.
+- Gatecrasher owns decisions. Critical decisions come from the owner only, and elevated
+  ones from approver agents holding `approve.<class>`. Every decision is signed
+  (EdDSA, `pkg/approvalapi`). A surface never decides on its own.
+- request_secret values never touch Gatecrasher storage, logs or a model transcript.
+  Record only that the secret was provided and the producer's reference.
+- Native Tachyon profile (until cutover): the producer client refuses Respond, and
+  Tachyon decides those native requests.
 - Callback authentication uses a separately provisioned direct Gatecrasher-issued
   service API key pinned to the Tachyon workload. Reverify with the own identity
   service. Key-derived JWT callbacks are unsupported because parent revocation
