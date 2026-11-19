@@ -25,7 +25,7 @@ const class = "approve.credentials"
 var (
 	warden   = libauth.Principal{Verified: true, ID: "key:warden", Kind: libauth.KindService, Audience: "gatecrasher", Scopes: []string{approvalapi.ScopeSubmit, approvalapi.ScopeRead}}
 	other    = libauth.Principal{Verified: true, ID: "key:other", Kind: libauth.KindService, Audience: "gatecrasher", Scopes: []string{approvalapi.ScopeSubmit, approvalapi.ScopeRead}}
-	owner    = libauth.Principal{Verified: true, ID: "usr_owner", Kind: libauth.KindOperator, Audience: "gatecrasher", Scopes: []string{"*"}}
+	owner    = libauth.Principal{Verified: true, ID: "user:usr_owner", Kind: "user", Audience: "gatecrasher", Scopes: []string{"*"}}
 	approver = libauth.Principal{Verified: true, ID: "key:approver", Kind: libauth.KindService, Audience: "gatecrasher", Scopes: []string{approvalapi.ScopeDecide, approvalapi.ScopeRead, class}}
 	// A wildcard grant never makes a caller an approver.
 	wildcard = libauth.Principal{Verified: true, ID: "key:wild", Kind: libauth.KindService, Audience: "gatecrasher", Scopes: []string{"*"}}
@@ -223,11 +223,17 @@ func TestCriticalOwnerOnly(t *testing.T) {
 	if _, err = svc.Decide(ctx, warden, out.ApprovalID, approvalapi.DecideRequest{Outcome: approvalapi.OutcomeApproved}); err == nil {
 		t.Fatal("the producer decided its own request")
 	}
-	// An operator that is not the owner is not the owner.
+	// Another user is not the owner, and neither is an unverified caller carrying the owner's id
+	// (auth off). The owner's kind is not part of the match.
 	notOwner := owner
-	notOwner.ID = "usr_someone"
+	notOwner.ID = "user:usr_someone"
 	if _, err = svc.Decide(ctx, notOwner, out.ApprovalID, approvalapi.DecideRequest{Outcome: approvalapi.OutcomeApproved}); err == nil {
-		t.Fatal("another operator decided")
+		t.Fatal("another user decided")
+	}
+	unverified := owner
+	unverified.Verified = false
+	if _, err = svc.Decide(ctx, unverified, out.ApprovalID, approvalapi.DecideRequest{Outcome: approvalapi.OutcomeApproved}); err == nil {
+		t.Fatal("an unverified caller with the owner's id decided")
 	}
 	d, err := svc.Decide(ctx, owner, out.ApprovalID, approvalapi.DecideRequest{Outcome: approvalapi.OutcomeApproved, Narrowed: &approvalapi.Narrowed{TTLSeconds: 300}})
 	if err != nil || d.Status != approvalapi.StatusApproved {

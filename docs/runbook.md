@@ -64,15 +64,28 @@ it in the `gatecrasher` block:
 ```yaml
 gatecrasher:
   approvals:
-    owner: { principal: "<owner's Gatecrasher operator principal id>", sub: "<owner registry id>" }
+    owner: { principal: "user:<owner user id>", sub: "<owner registry id>" }   # or "key:<owner key id>"
     producers: { "key:<warden key id>": warden }
     classes:
+      # Warden's starter rules route elevated requests to these two classes.
+      approve.enroll:
+        agents: { "key:<approver key id>": "<approver registry id>" }
+        ceiling: { max_ttl_seconds: 86400, audiences: [llm-gateway], scopes: [llm-gateway.decide] }
+        shadow: true
       approve.credentials:
         agents: { "key:<approver key id>": "<approver registry id>" }
         ceiling: { max_ttl_seconds: 86400, audiences: [llm-gateway], scopes: [llm-gateway.decide] }
         shadow: true
     decision_key_file: decision-signing.key   # relative to the database directory
 ```
+
+`owner.principal` is the owner's Gatecrasher identity principal id exactly as the identity
+module stamps it: `user:<user id>` for a signed-in session, or `key:<key id>` for an owner
+key (create one with `--scope gatecrasher.approval.read,gatecrasher.approval.decide`).
+It is matched by id on a verified caller; the kind is not checked. A value without a
+`user:` or `key:` prefix never matches, and startup logs a warning. `owner.sub` is the
+owner's registry id that decisions carry as `decider.sub`; Warden's `approvals.owner` must
+be the same value, because Warden pins critical decisions to it.
 
 Credentials are Gatecrasher identity keys (principal id `key:<id>`, audience `gatecrasher`):
 
@@ -92,7 +105,7 @@ Rules the store enforces:
   holds the class as an exact scope (a `*` grant never counts). An agent's approval must
   fit the ceiling after narrowing; an empty ceiling means agents cannot approve at all.
   With `shadow: true` agent decisions are recorded only and the request waits for the owner.
-- `critical` is decided by the owner only (the configured operator principal).
+- `critical` is decided by the owner only (the configured `owner.principal`).
 - Producers, the owner and the class's agents can read an approval; anyone else gets 404.
 - Decisions are EdDSA compact JWS, valid for redemption 10 minutes after the decision.
   A producer that misses the window submits a new request.
