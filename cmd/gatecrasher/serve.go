@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	libauth "github.com/hollis-labs/libs/security/auth"
 	"github.com/hollis-labs/substrate/module"
 	"github.com/hollis-labs/substrate/modules/auth"
 	"github.com/hollis-labs/substrate/modules/database"
@@ -62,25 +63,60 @@ func serve(ctx context.Context, app *module.App, ready func(net.Addr)) error {
 		return err
 	}
 	api.RegisterScopes(auth.ScopeTable(app))
-	owner, err := tachyon.New(tachyon.Config{BaseURL: cfg.TachyonURL, TokenFile: cfg.ProducerTokenFile, CallerScope: cfg.CallerScope})
-	if err != nil {
-		return err
+	if !cfg.TachyonConfigured() && !cfg.ApprovalsConfigured() {
+		return errors.New("gatecrasher: nothing to serve: configure gatecrasher.approvals.owner, the Tachyon binding, or both")
 	}
-	host, err := service.New(ctx, st, service.Config{OwnerRef: cfg.OwnerRef, CallerScope: cfg.CallerScope, CallbackSubject: cfg.CallbackSubject, ActorMap: cfg.ActorMap})
-	if err != nil {
-		return err
+	h := api.New(nil, id)
+	// The Tachyon response binding is optional: without it Gatecrasher serves approvals only.
+	if cfg.TachyonConfigured() {
+		owner, terr := tachyon.New(tachyon.Config{BaseURL: cfg.TachyonURL, TokenFile: cfg.ProducerTokenFile, CallerScope: cfg.CallerScope})
+		if terr != nil {
+			return terr
+		}
+		host, terr := service.New(ctx, st, service.Config{OwnerRef: cfg.OwnerRef, CallerScope: cfg.CallerScope, CallbackSubject: cfg.CallbackSubject, ActorMap: cfg.ActorMap})
+		if terr != nil {
+			return terr
+		}
+		defer func() { _ = host.Close() }()
+		if terr = host.Wire(owner); terr != nil {
+			return terr
+		}
+		h = api.New(host, id, service.RecipeRunner{Host: host})
 	}
-	defer func() { _ = host.Close() }()
-	if err = host.Wire(owner); err != nil {
-		return err
+	// The inbox (and its decision key) exists only when approvals are configured;
+	// otherwise its routes answer 503.
+	if cfg.ApprovalsConfigured() {
+		dataDir := filepath.Dir(st.Config().SQLite.Path)
+		inbox, aerr := approvals.New(st, approvals.Config{Settings: cfg.Approvals, DataDir: dataDir})
+		if aerr != nil {
+			return aerr
+		}
+		subs, aerr := inbox.Webhooks(dataDir)
+		if aerr != nil {
+			return aerr
+		}
+		go inbox.Run(ctx, func(err error) { slog.Warn("approvals: sweep failed", "err", err) })
+		go inbox.RunWebhooks(ctx, subs, nil, func(name string, err error) {
+			slog.Warn("approvals: webhook delivery failed", "webhook", name, "err", err)
+		})
+		h.WithApprovals(inbox)
 	}
-	inbox, err := approvals.New(st, approvals.Config{Settings: cfg.Approvals, DataDir: filepath.Dir(st.Config().SQLite.Path)})
-	if err != nil {
-		return err
+	if cfg.Auth.Trust == settings.TrustWarden {
+		w := cfg.Auth.Warden
+		jv, jerr := libauth.NewJWTVerifier(libauth.JWTConfig{Issuer: w.Issuer, Audience: "gatecrasher", JWKSURL: w.JWKSURL, BootstrapKeyFile: w.BootstrapKeyFile})
+		if jerr != nil {
+			return jerr
+		}
+		go jv.Run(ctx)
+		trusted := api.WardenVerifier(jv)
+		// The outer guard must accept Warden's tokens too; the routes reverify them.
+		if jerr = auth.AddVerifier(app, trusted); jerr != nil {
+			return jerr
+		}
+		h.WithTrusted(trusted)
 	}
-	go inbox.Run(ctx, func(err error) { slog.Warn("approvals: sweep failed", "err", err) })
 	handler, err := httphost.Handler(app, httphost.Options{
-		Routes: api.New(host, id, service.RecipeRunner{Host: host}).WithApprovals(inbox).Mux(),
+		Routes: h.Mux(),
 	})
 	if err != nil {
 		return err

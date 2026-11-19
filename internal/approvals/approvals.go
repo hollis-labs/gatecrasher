@@ -75,6 +75,7 @@ type Service struct {
 
 	mu      sync.Mutex
 	waiters map[string][]chan struct{}
+	changed chan struct{} // closed and replaced on every change (the event stream's wake)
 }
 
 // New opens the inbox on st and loads (or creates) the decision signing key.
@@ -101,7 +102,7 @@ func New(st *store.Store, cfg Config) (*Service, error) {
 		return nil, err
 	}
 	pub, _ := key.Public().(ed25519.PublicKey)
-	return &Service{st: st, cfg: cfg.Settings, now: func() time.Time { return now().UTC() }, key: key, kid: keyID(pub), waiters: map[string][]chan struct{}{}}, nil
+	return &Service{st: st, cfg: cfg.Settings, now: func() time.Time { return now().UTC() }, key: key, kid: keyID(pub), waiters: map[string][]chan struct{}{}, changed: make(chan struct{})}, nil
 }
 
 // JWKS is the public key set decisions verify against.
@@ -115,12 +116,17 @@ func (s *Service) configured() bool { return s.cfg.Owner.Principal != "" }
 
 // row is a stored approval.
 type row struct {
-	ID, Submitter, Key, Digest, Source, Tier, Class, Snapshot, Expires, Status string
-	JWS                                                                        sql.NullString
+	ID, Submitter, Key, Digest, Source, Kind, Tier, Class, Snapshot, Expires, Status string
+	JWS, SecretIntake, SecretRef, SecretAt                                           sql.NullString
 }
 
 func (r row) answer() approvalapi.Approval {
-	return approvalapi.Approval{ApprovalID: r.ID, Status: approvalapi.Status(r.Status), Decision: r.JWS.String}
+	a := approvalapi.Approval{ApprovalID: r.ID, Status: approvalapi.Status(r.Status), Decision: r.JWS.String}
+	if r.SecretRef.Valid {
+		at, _ := time.Parse(ts, r.SecretAt.String)
+		a.Secret = &approvalapi.SecretProvided{IntakeID: r.SecretIntake.String, Ref: r.SecretRef.String, ProvidedAt: at}
+	}
+	return a
 }
 
 func (r row) request() (approvalapi.SubmitRequest, error) {
@@ -129,12 +135,12 @@ func (r row) request() (approvalapi.SubmitRequest, error) {
 	return req, err
 }
 
-const selectRow = `SELECT a.approval_id, a.submitter, a.idempotency_key, a.request_digest, a.source, a.tier, a.approver_class, a.snapshot_json, a.expires_at, a.status, d.jws
- FROM approvals a LEFT JOIN approval_decisions d ON d.approval_id = a.approval_id `
+const selectRow = `SELECT a.approval_id, a.submitter, a.idempotency_key, a.request_digest, a.source, a.kind, a.tier, a.approver_class, a.snapshot_json, a.expires_at, a.status, d.jws, x.intake_id, x.ref, x.provided_at
+ FROM approvals a LEFT JOIN approval_decisions d ON d.approval_id = a.approval_id LEFT JOIN approval_secrets x ON x.approval_id = a.approval_id `
 
 func scan(sc interface{ Scan(...any) error }) (row, error) {
 	var r row
-	err := sc.Scan(&r.ID, &r.Submitter, &r.Key, &r.Digest, &r.Source, &r.Tier, &r.Class, &r.Snapshot, &r.Expires, &r.Status, &r.JWS)
+	err := sc.Scan(&r.ID, &r.Submitter, &r.Key, &r.Digest, &r.Source, &r.Kind, &r.Tier, &r.Class, &r.Snapshot, &r.Expires, &r.Status, &r.JWS, &r.SecretIntake, &r.SecretRef, &r.SecretAt)
 	return r, err
 }
 
@@ -202,7 +208,7 @@ func (s *Service) Submit(ctx context.Context, caller libauth.Principal, req appr
 		// Ground is recorded and approved on arrival, by Gatecrasher itself.
 		r := row{ID: id, Key: req.IdempotencyKey, Digest: digest, Source: req.Source, Tier: string(req.Tier)}
 		d := approvalapi.Actor{Sub: gatecrasherSub, Kind: approvalapi.KindApp}
-		if err = s.decide(ctx, tx, r, d, gatecrasherSub, approvalapi.OutcomeApproved, nil, "ground", now); err != nil {
+		if err = s.decide(ctx, tx, r, d, gatecrasherSub, approvalapi.OutcomeApproved, nil, nil, "ground", now); err != nil {
 			return err
 		}
 		out.Status = approvalapi.StatusApproved
@@ -213,6 +219,8 @@ func (s *Service) Submit(ctx context.Context, caller libauth.Principal, req appr
 	}
 	if created && out.Status != approvalapi.StatusPending {
 		s.notify(out.ApprovalID)
+	} else if created {
+		s.broadcast()
 	}
 	return out, created, nil
 }
@@ -234,8 +242,12 @@ func (s *Service) validate(req approvalapi.SubmitRequest, source string, now tim
 		return bad("approver_class is only for elevated")
 	case req.Principal.Sub == "" || !validKind(req.Principal.Kind):
 		return bad("principal needs sub and a known kind")
-	case req.Requested.Audience == "" || req.Requested.TTLSeconds <= 0 || len(req.Requested.Scopes) > maxScopes:
+	case len(req.Requested.Scopes) > maxScopes:
+		return bad("too many scopes")
+	case grantKind(req.Kind) && (req.Requested.Audience == "" || req.Requested.TTLSeconds <= 0):
 		return bad("requested needs audience and a positive ttl_seconds")
+	case !grantKind(req.Kind) && req.Requested.Audience == "" && (req.Requested.TTLSeconds != 0 || len(req.Requested.Scopes) > 0):
+		return bad("requested needs an audience when it names scopes or a ttl")
 	case len(req.Purpose) > maxPurpose:
 		return bad("purpose is too long")
 	case req.RequestDigest == "":
@@ -258,7 +270,7 @@ func (s *Service) validate(req approvalapi.SubmitRequest, source string, now tim
 			return bad("empty scope")
 		}
 	}
-	return nil
+	return s.validateKind(req, now)
 }
 
 func validKind(k approvalapi.PrincipalKind) bool {
@@ -271,12 +283,32 @@ func validKind(k approvalapi.PrincipalKind) bool {
 
 // mayRead: the submitter, the owner, and the class's approver agents.
 func (s *Service) mayRead(caller libauth.Principal, r row) bool {
-	if caller.ID == r.Submitter || s.isOwner(caller) {
-		return true
+	return s.viewerOf(caller).can(r.Submitter, r.Class)
+}
+
+// viewer is what one reader may see: everything (the owner), what it submitted, and the
+// requests of the classes it approves.
+type viewer struct {
+	all       bool
+	submitter string
+	classes   []string
+}
+
+func (v viewer) can(submitter, class string) bool {
+	return v.all || (v.submitter != "" && submitter == v.submitter) || (class != "" && slices.Contains(v.classes, class))
+}
+
+func (s *Service) viewerOf(caller libauth.Principal) viewer {
+	if s.isOwner(caller) {
+		return viewer{all: true}
 	}
-	c, ok := s.cfg.Classes[r.Class]
-	_, agent := c.Agents[caller.ID]
-	return ok && agent && hasExact(caller, r.Class)
+	v := viewer{submitter: caller.ID}
+	for name, c := range s.cfg.Classes {
+		if _, ok := c.Agents[caller.ID]; ok && hasExact(caller, name) {
+			v.classes = append(v.classes, name)
+		}
+	}
+	return v
 }
 
 // isOwner: a verified caller whose id is the configured owner principal. Identity ids are
@@ -427,6 +459,10 @@ func (s *Service) Decide(ctx context.Context, caller libauth.Principal, id strin
 		if err != nil {
 			return err
 		}
+		resp, err := checkResponse(req, in)
+		if err != nil {
+			return err
+		}
 		var who approvalapi.Actor
 		switch {
 		case s.isOwner(caller):
@@ -453,7 +489,7 @@ func (s *Service) Decide(ctx context.Context, caller libauth.Principal, id strin
 		default:
 			return fail(http.StatusForbidden, approvalapi.ErrCodeNotDecider, "Only the owner decides "+r.Tier+" requests")
 		}
-		if err = s.decide(ctx, tx, r, who, caller.ID, in.Outcome, narrowed, in.Note, now); err != nil {
+		if err = s.decide(ctx, tx, r, who, caller.ID, in.Outcome, narrowed, resp, in.Note, now); err != nil {
 			return err
 		}
 		decided = true
@@ -463,6 +499,8 @@ func (s *Service) Decide(ctx context.Context, caller libauth.Principal, id strin
 	})
 	if decided {
 		s.notify(id)
+	} else if err == nil && out.Shadow {
+		s.broadcast()
 	}
 	if err != nil {
 		return approvalapi.DecideResponse{}, err
@@ -471,14 +509,14 @@ func (s *Service) Decide(ctx context.Context, caller libauth.Principal, id strin
 }
 
 // decide moves a pending approval to its outcome and stores the signed decision.
-func (s *Service) decide(ctx context.Context, tx store.Tx, r row, who approvalapi.Actor, principal string, outcome approvalapi.Outcome, narrowed *approvalapi.Narrowed, note string, now time.Time) error {
+func (s *Service) decide(ctx context.Context, tx store.Tx, r row, who approvalapi.Actor, principal string, outcome approvalapi.Outcome, narrowed *approvalapi.Narrowed, resp *approvalapi.Response, note string, now time.Time) error {
 	jti := newID("dec")
 	claims := approvalapi.DecisionClaims{
 		Iss: approvalapi.Issuer, Aud: r.Source, Jti: jti,
 		Iat: now.Unix(), Exp: now.Add(approvalapi.MaxDecisionLifetime).Unix(),
 		ApprovalID: r.ID, RequestID: r.Key, RequestDigest: r.Digest,
 		Outcome: outcome, Tier: approvalapi.Tier(r.Tier), Decider: who,
-		DecidedAt: now.Truncate(time.Second), Narrowed: narrowed,
+		DecidedAt: now.Truncate(time.Second), Narrowed: narrowed, Response: resp,
 	}
 	jws, err := approvalapi.SignDecision(s.key, s.kid, claims)
 	if err != nil {
@@ -492,8 +530,12 @@ func (s *Service) decide(ctx context.Context, tx store.Tx, r row, who approvalap
 		return err
 	}
 	nj, _ := json.Marshal(narrowedOrEmpty(narrowed))
-	if _, err = tx.ExecContext(ctx, `INSERT INTO approval_decisions(approval_id, jti, outcome, decider_sub, decider_kind, decider_principal, narrowed_json, decided_at, kid, jws) VALUES(?,?,?,?,?,?,?,?,?,?)`,
-		r.ID, jti, string(outcome), who.Sub, string(who.Kind), principal, string(nj), now.Format(ts), s.kid, jws); err != nil {
+	rj := []byte("{}")
+	if resp != nil {
+		rj, _ = json.Marshal(resp)
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO approval_decisions(approval_id, jti, outcome, decider_sub, decider_kind, decider_principal, narrowed_json, decided_at, kid, jws, response_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		r.ID, jti, string(outcome), who.Sub, string(who.Kind), principal, string(nj), now.Format(ts), s.kid, jws, string(rj)); err != nil {
 		return err
 	}
 	return event(ctx, tx, r.ID, "decided", principal, map[string]any{"outcome": outcome, "decider": who, "jti": jti, "note": note}, now)
@@ -685,6 +727,23 @@ func (s *Service) notify(id string) {
 		default:
 		}
 	}
+	close(s.changed)
+	s.changed = make(chan struct{})
+}
+
+// broadcast wakes the event stream and webhooks without waking awaiters.
+func (s *Service) broadcast() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	close(s.changed)
+	s.changed = make(chan struct{})
+}
+
+// Changed is closed at the next change to the event log.
+func (s *Service) Changed() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.changed
 }
 
 var idEnc = base32.StdEncoding.WithPadding(base32.NoPadding)

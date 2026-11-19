@@ -40,6 +40,14 @@ type Handler struct {
 	own       libauth.Verifier
 	recipe    RecipeRunner
 	approvals Approvals
+	trusted   libauth.Verifier
+}
+
+// WithTrusted also accepts credentials v verifies on the approval routes (auth.trust:
+// warden). The Tachyon callback and recipe routes keep accepting only Gatecrasher's own.
+func (h *Handler) WithTrusted(v libauth.Verifier) *Handler {
+	h.trusted = v
+	return h
 }
 
 // WithApprovals serves the approval inbox; without it those routes answer 503.
@@ -91,6 +99,10 @@ func (h *Handler) authorize(w http.ResponseWriter, r *http.Request) {
 	d.UseNumber()
 	if d.Decode(&in) != nil || !errors.Is(d.Decode(new(any)), io.EOF) {
 		apierr.Write(w, 400, "invalid_request", "Invalid command", nil)
+		return
+	}
+	if h.assessor == nil {
+		apierr.Write(w, 503, "unavailable", "The Tachyon binding is not configured", nil)
 		return
 	}
 	out, err := h.assessor.AuthorizeResponse(r.Context(), p, in)

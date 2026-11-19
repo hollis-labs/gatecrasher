@@ -47,3 +47,44 @@ func TestParseApprovals(t *testing.T) {
 		}
 	}
 }
+
+func TestParseFanoutAndTrust(t *testing.T) {
+	good := map[string]any{
+		"approvals": map[string]any{
+			"owner":          map[string]any{"principal": "usr_1", "sub": "owner"},
+			"classes":        map[string]any{"approve.credentials": map[string]any{}},
+			"intake_origins": map[string]any{"warden": []any{"https://warden.example", "http://127.0.0.1:9000"}},
+			"webhooks": []any{
+				map[string]any{"name": "basalisk", "url": "http://127.0.0.1:8085/hooks/gate", "secret_file": "basalisk.key", "view": "owner"}, //nolint:gosec // a file name, not a credential
+				map[string]any{"name": "bot", "url": "https://bot.example/hook", "secret_file": "bot.key", "view": "approve.credentials"},
+			},
+		},
+		"auth": map[string]any{"trust": "warden", "warden": map[string]any{"issuer": "warden", "jwks_url": "https://warden.example/.well-known/jwks.json"}},
+	}
+	s, err := settings.Parse(good)
+	if err != nil || s.Auth.Trust != settings.TrustWarden || len(s.Approvals.Webhooks) != 2 || !s.ApprovalsConfigured() || s.TachyonConfigured() {
+		t.Fatalf("good: %v %+v", err, s)
+	}
+	hook := func(m map[string]any) map[string]any {
+		return map[string]any{"approvals": map[string]any{"classes": map[string]any{"approve.credentials": map[string]any{}}, "webhooks": []any{m}}}
+	}
+	for name, raw := range map[string]any{
+		"http hook":        hook(map[string]any{"name": "a", "url": "http://hooks.example/x", "secret_file": "k", "view": "owner"}),
+		"no secret":        hook(map[string]any{"name": "a", "url": "https://hooks.example/x", "view": "owner"}),
+		"unknown view":     hook(map[string]any{"name": "a", "url": "https://hooks.example/x", "secret_file": "k", "view": "approve.other"}),
+		"userinfo":         hook(map[string]any{"name": "a", "url": "https://u:p@hooks.example/x", "secret_file": "k", "view": "owner"}), //nolint:gosec // the refused case
+		"origin with path": map[string]any{"approvals": map[string]any{"intake_origins": map[string]any{"warden": []any{"https://warden.example/intake"}}}},
+		"origin http":      map[string]any{"approvals": map[string]any{"intake_origins": map[string]any{"warden": []any{"http://warden.example"}}}},
+		"bad trust":        map[string]any{"auth": map[string]any{"trust": "everyone"}},
+		"warden no keys":   map[string]any{"auth": map[string]any{"trust": "warden", "warden": map[string]any{"issuer": "warden"}}},
+		"warden no iss":    map[string]any{"auth": map[string]any{"trust": "warden", "warden": map[string]any{"jwks_url": "https://warden.example/jwks"}}},
+		"warden http jwks": map[string]any{"auth": map[string]any{"trust": "warden", "warden": map[string]any{"issuer": "w", "jwks_url": "http://warden.example/jwks"}}},
+	} {
+		if _, err := settings.Parse(raw); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	if s, err := settings.Parse(map[string]any{"tachyon_url": "https://t.example"}); err != nil || !s.TachyonConfigured() {
+		t.Fatalf("tachyon configured: %v", err)
+	}
+}

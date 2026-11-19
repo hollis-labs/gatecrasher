@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"strings"
 )
 
@@ -20,6 +22,28 @@ type Settings struct {
 	TachyonURL        string            `json:"tachyon_url"`
 	ProducerTokenFile string            `json:"producer_token_file"`
 	Approvals         Approvals         `json:"approvals"`
+	Auth              Auth              `json:"auth"`
+}
+
+// Trust modes.
+const (
+	TrustStandalone = "standalone"
+	TrustWarden     = "warden"
+)
+
+// Auth chooses whose credentials Gatecrasher accepts besides its own identity keys.
+// Standalone (the default) trusts only its own. Warden also accepts Warden-issued
+// EdDSA JWTs with aud=gatecrasher, verified against Warden's JWKS.
+type Auth struct {
+	Trust  string `json:"trust"`
+	Warden Warden `json:"warden"`
+}
+
+// Warden is how to verify Warden-issued tokens.
+type Warden struct {
+	Issuer           string `json:"issuer"`
+	JWKSURL          string `json:"jwks_url"`
+	BootstrapKeyFile string `json:"bootstrap_key_file"`
 }
 
 // Approvals configures the approval inbox (gate v1). With no owner and no producers
@@ -35,6 +59,21 @@ type Approvals struct {
 	// DecisionKeyFile holds the Ed25519 decision signing key, created 0600 on first
 	// start. Relative paths are resolved next to the database.
 	DecisionKeyFile string `json:"decision_key_file"`
+	// IntakeOrigins maps a producer source to the origins (scheme://host[:port]) its
+	// secret_request intake URLs may use. A source with none cannot request secrets.
+	IntakeOrigins map[string][]string `json:"intake_origins"`
+	// Webhooks are signed event deliveries to subscribers (surfaces).
+	Webhooks []Webhook `json:"webhooks"`
+}
+
+// Webhook is one subscriber. View is what it may see: "owner" (everything) or an
+// approver class ("approve.<class>": that class's elevated requests). SecretFile holds
+// the HMAC key (at least 32 bytes, not readable by group or others).
+type Webhook struct {
+	Name       string `json:"name"`
+	URL        string `json:"url"`
+	SecretFile string `json:"secret_file"`
+	View       string `json:"view"`
 }
 
 // Owner binds the owner's Gatecrasher identity to the registry id decisions carry.
@@ -88,7 +127,67 @@ func Parse(raw any) (Settings, error) {
 	if err = s.Approvals.validate(); err != nil {
 		return s, err
 	}
+	if err = s.Auth.validate(); err != nil {
+		return s, err
+	}
 	return s, nil
+}
+
+// TachyonConfigured reports whether any of the Tachyon response binding is configured;
+// without it Gatecrasher serves approvals only.
+func (s Settings) TachyonConfigured() bool {
+	return s.OwnerRef != "" || s.CallerScope != "" || s.CallbackSubject != "" || s.TachyonURL != "" || s.ProducerTokenFile != "" || len(s.ActorMap) > 0
+}
+
+// ApprovalsConfigured reports whether the approval inbox has an owner.
+func (s Settings) ApprovalsConfigured() bool { return s.Approvals.Owner.Principal != "" }
+
+func (a Auth) validate() error {
+	switch a.Trust {
+	case "", TrustStandalone:
+		return nil
+	case TrustWarden:
+		if a.Warden.Issuer == "" {
+			return fmt.Errorf("gatecrasher: auth.warden.issuer is required for trust warden")
+		}
+		if a.Warden.JWKSURL == "" && a.Warden.BootstrapKeyFile == "" {
+			return fmt.Errorf("gatecrasher: auth.warden needs jwks_url or bootstrap_key_file")
+		}
+		if a.Warden.JWKSURL != "" && !SafeURL(a.Warden.JWKSURL) {
+			return fmt.Errorf("gatecrasher: auth.warden.jwks_url must be https (or http on loopback)")
+		}
+		return nil
+	}
+	return fmt.Errorf("gatecrasher: auth.trust must be standalone or warden")
+}
+
+// SafeURL reports whether raw is https, or http to a loopback host, with no user info.
+func SafeURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.User != nil {
+		return false
+	}
+	switch u.Scheme {
+	case "https":
+		return true
+	case "http":
+		h := u.Hostname()
+		if h == "localhost" {
+			return true
+		}
+		ip := net.ParseIP(h)
+		return ip != nil && ip.IsLoopback()
+	}
+	return false
+}
+
+// Origin is a URL's scheme://host[:port], lower-cased, or "" when it has none.
+func Origin(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return strings.ToLower(u.Scheme + "://" + u.Host)
 }
 
 func (a Approvals) validate() error {
@@ -112,6 +211,29 @@ func (a Approvals) validate() error {
 		if c.Ceiling.MaxTTLSeconds < 0 {
 			return fmt.Errorf("gatecrasher: negative ceiling in %s", name)
 		}
+	}
+	for src, origins := range a.IntakeOrigins {
+		for _, o := range origins {
+			if src == "" || !SafeURL(o) || Origin(o) != strings.ToLower(strings.TrimSuffix(o, "/")) {
+				return fmt.Errorf("gatecrasher: intake origin %q for %q must be scheme://host[:port], https or loopback http", o, src)
+			}
+		}
+	}
+	seen := map[string]bool{}
+	for _, w := range a.Webhooks {
+		switch {
+		case w.Name == "" || seen[w.Name]:
+			return fmt.Errorf("gatecrasher: webhook names must be set and unique")
+		case !SafeURL(w.URL):
+			return fmt.Errorf("gatecrasher: webhook %s url must be https (or http on loopback)", w.Name)
+		case w.SecretFile == "":
+			return fmt.Errorf("gatecrasher: webhook %s needs secret_file", w.Name)
+		case w.View != "owner":
+			if _, ok := a.Classes[w.View]; !ok {
+				return fmt.Errorf("gatecrasher: webhook %s view must be owner or a configured approver class", w.Name)
+			}
+		}
+		seen[w.Name] = true
 	}
 	return nil
 }

@@ -10,9 +10,14 @@ The Folio shell uses `SUBSTRATE_CONFIG` or the XDG Gatecrasher config file. Data
 and identity state use XDG locations or `GATECRASHER_DATA_DIR`. Every listener,
 including loopback/managed, enforces auth. Identity setup is offline. The app
 selects no MCP module. The approval inbox (gate v1, below) is served only once its
-`approvals` block names an owner and producers; until then its routes answer 503.
+`approvals` block names an owner; until then its routes answer 503 and no decision
+key is created.
 
-Required operator bindings in the `gatecrasher` block:
+Gatecrasher serves approvals on their own: the Tachyon response binding below is
+optional. Configure either, or both; with neither, `serve` refuses to start ("nothing
+to serve"). If any Tachyon key is set, all of them must be valid.
+
+Tachyon response binding, in the `gatecrasher` block:
 
 | Key | Meaning |
 |---|---|
@@ -117,8 +122,66 @@ only (they expire in 10 minutes), but producers caching the key set must refetch
 `/api/gate/v1/jwks.json`. Requests, decisions, shadow decisions and the event log
 (`approval_events`) are append-only; a status moves once, from pending.
 
-Not yet: the fan-out stream for surfaces, approval cards, `request_secret`, and Warden
-JWKS trust (`auth.trust: warden`).
+### Kinds
+
+- `credential_grant` (and any other kind): approve or deny `requested`.
+- `choice` and `question`: `prompt` carries the question (and 2 to 20 choices); the
+  owner approves with `choice` or `answer`, or declines with `denied`. The response is
+  in the signed decision.
+- `secret_request` (always `critical`): `secret_intake` names the producer's one-use
+  intake. Allow each producer's intake origins:
+
+  ```yaml
+  gatecrasher:
+    approvals:
+      intake_origins: { warden: ["https://<warden origin>"] }
+  ```
+
+  The card's form posts the value write-only to the intake. The producer then reports
+  `POST /api/gate/v1/approvals/{id}/secret-provided` with the intake id and the
+  reference it stored the value under; Gatecrasher records the reference and time and
+  closes the request approved (decider: the producer, `kind: app`). Gatecrasher has no
+  route that accepts a value, keeps none, and logs none. The owner declines with decide.
+
+### Surfaces: stream, webhooks, cards
+
+See [integration-guide.md](integration-guide.md). `GET /api/gate/v1/events` is the
+server-sent event stream; webhooks push the same events to configured subscribers:
+
+```yaml
+gatecrasher:
+  approvals:
+    webhooks:
+      - { name: basalisk, url: "https://<surface>/hooks/gatecrasher", secret_file: basalisk-webhook.key, view: owner }
+      - { name: credentials-bot, url: "https://<agent>/hook", secret_file: bot-webhook.key, view: approve.credentials }
+```
+
+The key file (relative to the database directory) holds at least 32 random bytes and
+must not be readable by group or others (`head -c 48 /dev/urandom | base64 > key;
+chmod 600 key`). A subscriber starts at the end of the log the first time it runs, then
+receives every later event it may see, in order, at least once; its cursor is in
+`webhook_cursors`. Failed deliveries retry with backoff up to a minute. URLs must be
+https, or http on loopback.
+
+### Trusting Warden (`auth.trust: warden`)
+
+```yaml
+gatecrasher:
+  auth:
+    trust: warden
+    warden:
+      issuer: warden
+      jwks_url: "https://<warden origin>/.well-known/jwks.json"
+      # bootstrap_key_file: warden-jwks.json   # used until the first fetch succeeds
+```
+
+The approval routes (and the outer guard) then also accept Warden-issued EdDSA JWTs
+with `aud: gatecrasher`, that issuer, and the scopes in `scope`. A Warden principal's
+id is `warden:<sub>`: list it under `producers` (for example
+`"warden:<warden service sub>": warden`) or a class's `agents`. It is never the owner,
+whatever `kind` it claims; the owner is Gatecrasher's own operator identity. The Tachyon
+callback and recipe routes keep accepting only Gatecrasher's own keys. `standalone`
+(the default) trusts only Gatecrasher's own keys.
 
 ## Storage and recovery
 

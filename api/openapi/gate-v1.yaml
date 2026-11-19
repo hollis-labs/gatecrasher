@@ -14,6 +14,16 @@ info:
       is required), within per-class ceilings, or by the owner.
     - `critical`: decided by the owner, a human, only.
 
+    Kinds: `credential_grant` (and any other kind) is approve/deny for `requested`.
+    `choice` and `question` carry a `prompt` and are answered with `choice` or `answer`
+    on decide. `secret_request` (always `critical`) carries a `secret_intake`; its card
+    posts the value write-only to the producer's intake, and the producer reports it
+    provided (`/secret-provided`).
+
+    Surfaces (Tachyon, Basalisk, Surface/ADE) follow approvals on the event stream
+    (`/api/gate/v1/events`) or a signed webhook, render `/card`, and call `/decide`.
+    See docs/integration-guide.md.
+
     Go types for this contract are in `pkg/approvalapi` (module
     `github.com/hollis-labs/gatecrasher`). That package and this file must agree.
 
@@ -26,6 +36,7 @@ security:
   - bearer: []
 tags:
   - name: approvals
+  - name: surfaces
   - name: keys
 paths:
   /api/gate/v1/approvals:
@@ -169,6 +180,90 @@ paths:
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
         '503': { $ref: '#/components/responses/Error' }
+  /api/gate/v1/approvals/{id}/secret-provided:
+    post:
+      tags: [approvals]
+      operationId: secretProvided
+      summary: Report that a secret_request's secret was provided (producer only)
+      description: |
+        Scope `gatecrasher.approval.submit`; only the submitter (404 otherwise). The owner
+        posted the value to the producer's intake; the producer reports the intake and
+        the reference it stored the value under. Gatecrasher records `intake_id`, `ref`
+        and `provided_at` only, and closes the approval `approved` with a decision whose
+        `decider` is the producer (`kind: app`, `sub` = its source) and whose `response`
+        carries `secret_ref`. Reporting the same ref again answers the same; a different
+        ref is 409. `ref` must match `^[A-Za-z0-9._:/@-]{1,256}$` (a reference, never a
+        value).
+      parameters:
+        - $ref: '#/components/parameters/ApprovalID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SecretProvidedRequest' }
+      responses:
+        '200':
+          description: Recorded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Approval' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /api/gate/v1/approvals/{id}/card:
+    get:
+      tags: [surfaces]
+      operationId: getCard
+      summary: The approval as a transport-neutral card
+      description: |
+        Scope `gatecrasher.approval.read`, for a caller that may read the approval.
+        Gatecrasher owns the card's content and the decide endpoint; how it is drawn is
+        the surface's concern (the MCP UI work renders it in chats). A decided card has
+        no actions and carries `outcome`; a closed `request_secret` card has no form.
+      parameters:
+        - $ref: '#/components/parameters/ApprovalID'
+      responses:
+        '200':
+          description: The card.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Card' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /api/gate/v1/events:
+    get:
+      tags: [surfaces]
+      operationId: streamEvents
+      summary: The approval event log as server-sent events
+      description: |
+        Scope `gatecrasher.approval.read`. `text/event-stream`; each event has `id` (its
+        seq), `event: approval` and `data` a FeedEvent. Only events of approvals the
+        caller may read are sent (the owner: all; a producer: its own; an approver agent:
+        its classes' elevated requests). Resume with `Last-Event-ID` (or `?after=<seq>`);
+        with neither the stream starts at the beginning of the log. An idle stream sends
+        a `: keepalive` comment every 15 seconds. Event types: submitted, decided,
+        shadow_decided, withdrawn, expired, secret_provided.
+      parameters:
+        - name: after
+          in: query
+          schema: { type: integer, minimum: 0 }
+        - name: Last-Event-ID
+          in: header
+          schema: { type: string }
+      responses:
+        '200':
+          description: The stream.
+          content:
+            text/event-stream:
+              schema: { $ref: '#/components/schemas/FeedEvent' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
   /api/gate/v1/jwks.json:
     get:
       tags: [keys]
@@ -192,8 +287,10 @@ components:
       type: http
       scheme: bearer
       description: |
-        A Gatecrasher API key with the route's scope. Later, with `auth.trust: warden`,
-        a Warden-issued JWT with `aud: gatecrasher` and the same scopes.
+        A Gatecrasher API key with the route's scope. With `auth.trust: warden`, the
+        approval routes also accept a Warden-issued EdDSA JWT with `aud: gatecrasher`,
+        the configured issuer and the scopes in `scope`; its principal id is
+        `warden:<sub>` and it is never the owner.
   parameters:
     ApprovalID:
       name: id
@@ -257,7 +354,10 @@ components:
       properties:
         idempotency_key: { type: string, description: The producer's request id. }
         source: { type: string, examples: ['warden'] }
-        kind: { type: string, enum: [credential_grant] }
+        kind:
+          type: string
+          description: credential_grant (or any other approve/deny kind), choice, question or secret_request.
+          examples: [credential_grant, choice, question, secret_request]
         tier: { $ref: '#/components/schemas/Tier' }
         approver_class:
           type: string
@@ -276,6 +376,121 @@ components:
             `constraints` always an object and `scopes` always an array.
             `approvalapi.RequestDigest` computes it.
         expires_at: { type: string, format: date-time }
+        prompt:
+          $ref: '#/components/schemas/Prompt'
+        secret_intake:
+          $ref: '#/components/schemas/SecretIntake'
+      description: |
+        `requested` needs `audience` and a positive `ttl_seconds` for grant kinds; for
+        choice, question and secret_request it may be empty. `prompt` is required for
+        choice (2 to 20 choices, unique ids `[A-Za-z0-9._-]`) and question (no choices).
+        `secret_intake` is required for secret_request, whose tier must be `critical` and
+        whose `intake_url` must be on an origin the operator allowed for the source
+        (`approvals.intake_origins`). Neither field is in the request digest.
+    Prompt:
+      type: object
+      required: [question]
+      properties:
+        question: { type: string, maxLength: 2000 }
+        choices:
+          type: array
+          maxItems: 20
+          items:
+            type: object
+            required: [id, label]
+            properties:
+              id: { type: string, pattern: '^[A-Za-z0-9._-]{1,64}$' }
+              label: { type: string, maxLength: 200 }
+    Response:
+      type: object
+      properties:
+        choice: { type: string }
+        answer: { type: string, maxLength: 4000 }
+        secret_ref: { type: string }
+    SecretProvidedRequest:
+      type: object
+      required: [intake_id, ref, provided_at]
+      additionalProperties: false
+      properties:
+        intake_id: { type: string }
+        ref: { type: string, pattern: '^[A-Za-z0-9._:/@-]{1,256}$' }
+        provided_at: { type: string, format: date-time }
+    Card:
+      type: object
+      description: |
+        `version: gatecrasher.card/v1`. `type` is approve, choose, answer or
+        request_secret. Each action other than provide_secret names its `decide` path;
+        POST a DecideRequest with the action's `outcome` (plus `choice` or `answer`).
+        provide_secret is the `secret` form: one field (`field`, "value") posted
+        write-only to `secret.post_url`; a surface must keep the value out of any model
+        transcript, log or store.
+      required: [version, approval_id, type, status, tier, kind, source, title, principal, evidence, expires_at, deciders, actions]
+      properties:
+        version: { type: string, const: gatecrasher.card/v1 }
+        approval_id: { type: string }
+        type: { type: string, enum: [approve, choose, answer, request_secret] }
+        status: { $ref: '#/components/schemas/Status' }
+        tier: { $ref: '#/components/schemas/Tier' }
+        kind: { type: string }
+        source: { type: string }
+        title: { type: string }
+        summary: { type: string }
+        principal: { $ref: '#/components/schemas/Principal' }
+        requested: { $ref: '#/components/schemas/Requested' }
+        evidence: { $ref: '#/components/schemas/Evidence' }
+        prompt: { $ref: '#/components/schemas/Prompt' }
+        expires_at: { type: string, format: date-time }
+        deciders: { type: string, examples: ['owner', 'owner, approve.credentials'] }
+        actions:
+          type: array
+          items:
+            type: object
+            required: [kind, label]
+            properties:
+              kind: { type: string, enum: [approve, deny, choose, answer, provide_secret] }
+              label: { type: string }
+              outcome: { type: string, enum: [approved, denied] }
+              decide: { type: string }
+        secret:
+          type: object
+          required: [intake_id, post_url, field, expires_at, write_only]
+          properties:
+            intake_id: { type: string }
+            post_url: { type: string, format: uri }
+            field: { type: string, const: value }
+            expires_at: { type: string, format: date-time }
+            write_only: { type: boolean, const: true }
+        outcome:
+          type: object
+          properties:
+            status: { $ref: '#/components/schemas/Status' }
+            decider: { $ref: '#/components/schemas/Actor' }
+            response: { $ref: '#/components/schemas/Response' }
+    FeedEvent:
+      type: object
+      required: [seq, approval_id, type, at, status, tier, kind, source]
+      properties:
+        seq: { type: integer }
+        approval_id: { type: string }
+        type: { type: string, enum: [submitted, decided, shadow_decided, withdrawn, expired, secret_provided] }
+        at: { type: string }
+        status: { $ref: '#/components/schemas/Status', description: The approval's status now. }
+        tier: { $ref: '#/components/schemas/Tier' }
+        kind: { type: string }
+        source: { type: string }
+    WebhookDelivery:
+      type: object
+      description: |
+        Body of a webhook POST to a configured subscriber, in log order, at least once.
+        Header `Gatecrasher-Signature: t=<unix>,v1=<hex HMAC-SHA256("<t>.<body>")>` under
+        the subscriber's key; `approvalapi.VerifyWebhook` checks it (5 minute tolerance).
+        Header `Gatecrasher-Webhook` names the subscriber. Answer 2xx to advance.
+      required: [subscriber, events]
+      properties:
+        subscriber: { type: string }
+        events:
+          type: array
+          items: { $ref: '#/components/schemas/FeedEvent' }
     SubmitResponse:
       type: object
       required: [approval_id, status]
@@ -291,6 +506,8 @@ components:
         decision:
           type: string
           description: The signed decision (compact JWS, see DecisionClaims). Present when status is approved or denied.
+        secret:
+          $ref: '#/components/schemas/SecretProvided' 
     DecideRequest:
       type: object
       required: [outcome]
@@ -304,6 +521,8 @@ components:
             scopes: { type: array, items: { type: string } }
             ttl_seconds: { type: integer, minimum: 1 }
         note: { type: string, maxLength: 2000, description: Kept in the approval's event log, not in the decision. }
+        choice: { type: string, description: The chosen choice id, approving a choice request. }
+        answer: { type: string, maxLength: 4000, description: The answer, approving a question request. }
     DecideResponse:
       allOf:
         - $ref: '#/components/schemas/Approval'
@@ -321,7 +540,10 @@ components:
         `exp - iat` is at most 10 minutes), that `request_id`, `request_digest` and `tier`
         match what it submitted, that a `critical` decision has `decider.kind: human`
         and `decider.sub` equal to the owner's principal, and that `narrowed` only narrows.
-        `approvalapi.VerifyDecision` and `DecisionClaims.Check` do this.
+        `approvalapi.VerifyDecision` and `DecisionClaims.Check` do this. An approved
+        `secret_request` is the exception: its decider is the producer itself
+        (`kind: app`, `sub` = `aud`) with `response.secret_ref`; pass
+        `Expect.SecretRequest` to accept that.
       required: [iss, aud, jti, iat, exp, approval_id, request_id, request_digest, outcome, tier, decider, decided_at]
       properties:
         iss: { type: string, const: gatecrasher }
@@ -342,6 +564,7 @@ components:
           properties:
             scopes: { type: array, items: { type: string } }
             ttl_seconds: { type: integer, minimum: 1 }
+        response: { $ref: '#/components/schemas/Response' }
     JWK:
       type: object
       required: [kty, crv, kid, x]
@@ -370,8 +593,8 @@ components:
     SecretIntake:
       type: object
       description: |
-        Milestone 2 (request_secret). The producer (Warden) creates a one-use intake and
-        puts it on the approval. Gatecrasher's card form posts the value write-only
+        request_secret. The producer (Warden) creates a one-use intake and puts it on
+        the approval. Gatecrasher's card form posts the value write-only
         straight to `intake_url`. Gatecrasher never receives, stores or logs the value,
         and the value never enters a model transcript.
       required: [intake_id, intake_url, expires_at]
@@ -381,7 +604,7 @@ components:
         expires_at: { type: string, format: date-time }
     SecretProvided:
       type: object
-      description: Milestone 2. All Gatecrasher records about a provided secret.
+      description: All Gatecrasher records about a provided secret.
       required: [intake_id, ref, provided_at]
       properties:
         intake_id: { type: string }

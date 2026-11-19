@@ -160,6 +160,11 @@ type Expect struct {
 	// Owner is the owner's principal id; a critical decision must be decided by it,
 	// as a human.
 	Owner string
+	// SecretRequest is set when the request was a secret_request. Its approval is
+	// decided by the producer itself (decider kind app, sub equal to aud), carrying the
+	// secret reference: the producer's own intake received the value. A decline is
+	// still the owner's.
+	SecretRequest bool
 }
 
 // Check ties verified claims to the request: request id, digest and tier must match;
@@ -174,7 +179,8 @@ func (c DecisionClaims) Check(e Expect) error {
 	case c.Tier != e.Tier:
 		return fmt.Errorf("%w: tier", ErrMismatch)
 	}
-	if c.Tier == TierCritical && (c.Decider.Kind != KindHuman || e.Owner == "" || c.Decider.Sub != e.Owner) {
+	byProducer := e.SecretRequest && c.Outcome == OutcomeApproved && c.Decider.Kind == KindApp && c.Decider.Sub == c.Aud && c.Response != nil && c.Response.SecretRef != ""
+	if c.Tier == TierCritical && !byProducer && (c.Decider.Kind != KindHuman || e.Owner == "" || c.Decider.Sub != e.Owner) {
 		return fmt.Errorf("%w: a critical decision needs the owner", ErrMismatch)
 	}
 	if n := c.Narrowed; n != nil {
