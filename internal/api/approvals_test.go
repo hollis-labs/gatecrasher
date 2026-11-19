@@ -47,7 +47,7 @@ func server(t *testing.T, shadow bool) *httptest.Server {
 		t.Fatal(err)
 	}
 	svc, err := approvals.New(st, approvals.Config{DataDir: dir, Settings: settings.Approvals{
-		Owner:     settings.Owner{Principal: "usr_owner", Sub: "chrispian"},
+		Owner:     settings.Owner{Principal: "user:usr_owner", Sub: "chrispian"},
 		Producers: map[string]string{"key:warden": "warden"},
 		Classes: map[string]settings.Class{cls: {
 			Agents:  map[string]string{"key:approver": "agt_approver"},
@@ -62,7 +62,7 @@ func server(t *testing.T, shadow bool) *httptest.Server {
 	v := tokens{
 		"warden":    {Verified: true, ID: "key:warden", Kind: libauth.KindService, Audience: g, Scopes: []string{approvalapi.ScopeSubmit, approvalapi.ScopeRead}},
 		"reader":    {Verified: true, ID: "key:reader", Kind: libauth.KindService, Audience: g, Scopes: []string{approvalapi.ScopeRead}},
-		"owner":     {Verified: true, ID: "usr_owner", Kind: libauth.KindOperator, Audience: g, Scopes: []string{"*"}},
+		"owner":     {Verified: true, ID: "user:usr_owner", Kind: "user", Audience: g, Scopes: []string{"*"}},
 		"approver":  {Verified: true, ID: "key:approver", Kind: libauth.KindService, Audience: g, Scopes: []string{approvalapi.ScopeDecide, approvalapi.ScopeRead, cls}},
 		"elsewhere": {Verified: true, ID: "key:warden", Kind: libauth.KindService, Audience: "tachyon", Scopes: []string{"*"}},
 	}

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"slices"
@@ -80,6 +81,9 @@ type Service struct {
 func New(st *store.Store, cfg Config) (*Service, error) {
 	if st == nil {
 		return nil, errors.New("approvals: no store")
+	}
+	if o := cfg.Settings.Owner.Principal; o != "" && !strings.HasPrefix(o, "user:") && !strings.HasPrefix(o, "key:") {
+		slog.Warn("approvals: owner.principal has no user: or key: prefix; the owner will never match a caller", "owner_principal", o)
 	}
 	now := cfg.Now
 	if now == nil {
@@ -275,8 +279,12 @@ func (s *Service) mayRead(caller libauth.Principal, r row) bool {
 	return ok && agent && hasExact(caller, r.Class)
 }
 
+// isOwner: a verified caller whose id is the configured owner principal. Identity ids are
+// namespaced ("user:usr_…" for a session, "key:k_…" for a key), so the id is the binding; the
+// kind is not checked because a live identity stamps "user" or "service", never "operator".
+// Unverified callers (auth off) never match.
 func (s *Service) isOwner(p libauth.Principal) bool {
-	return s.cfg.Owner.Principal != "" && p.ID == s.cfg.Owner.Principal && p.Kind == libauth.KindOperator
+	return p.Verified && s.cfg.Owner.Principal != "" && p.ID == s.cfg.Owner.Principal
 }
 
 // hasExact: approver classes are never granted by a wildcard scope.

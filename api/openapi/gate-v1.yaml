@@ -134,7 +134,7 @@ paths:
       summary: Decide a pending approval (surfaces and approver agents)
       description: |
         Scope `gatecrasher.approval.decide`.
-        - The owner (the configured operator principal) may decide any pending approval;
+        - The owner (the verified caller whose id is the configured owner principal, user:<id> or key:<id>) may decide any pending approval;
           the decision carries `decider.kind: human` and the owner's registry id.
         - `elevated`: an approver agent configured for the class that also holds the
           class itself (`approve.<class>`) as an exact scope (wildcards never count).

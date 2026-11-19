@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fix: the owner can read and decide approvals. The owner is matched by
+  `owner.principal` id on a verified caller (`user:<id>` session or `key:<id>` owner
+  key); the operator-kind requirement, which a live identity never stamps, is gone.
+  Startup warns when `owner.principal` has neither prefix. Tested through the real
+  identity module.
 - Gatecrasher is now the human-in-the-loop and approval service: it owns the inbox,
   the decisions and their routing. README, AGENTS and project.yaml reflect this.
 - Add the version 1 approval contract: `api/openapi/gate-v1.yaml` (submit, get, await,
